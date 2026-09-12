@@ -24,6 +24,62 @@ bool RaveAudioEngine::hasModelBackend() const noexcept
     return modelBackendConfigured.load(std::memory_order_acquire);
 }
 
+ModelRuntimeConfiguration RaveAudioEngine::runtimeConfiguration() const noexcept
+{
+    if (configuredSampleRate > 0.0 && maximumBlockSize > 0)
+        return { configuredSampleRate, maximumBlockSize };
+    return {};
+}
+
+bool RaveAudioEngine::activateModelBackend(ModelBackendPtr candidate)
+{
+    if (candidate == nullptr)
+        return false;
+
+    // Callers suspend or stop the device callback first, so this bounded join
+    // happens on the message thread and never inside the audio callback.
+    inferenceWorker.stop();
+
+    ModelBackendPtr previous = inferenceWorker.currentBackend();
+    const auto previousLatentCount = modelLatentDimensionCount.load(std::memory_order_acquire);
+    const bool previousConfigured = modelBackendConfigured.load(std::memory_order_acquire);
+
+    const auto restore = [&](ModelBackendPtr& previousBackend) {
+        modelLatentDimensionCount.store(previousLatentCount, std::memory_order_release);
+        modelBackendConfigured.store(previousConfigured, std::memory_order_release);
+        inferenceWorker.setBackend(std::move(previousBackend));
+        if (deviceConfigured)
+            prepare(configuredSampleRate, maximumBlockSize, configuredOutputChannels);
+    };
+
+    try
+    {
+        modelLatentDimensionCount.store(candidate->latentDimensionCount(), std::memory_order_release);
+        modelBackendConfigured.store(true, std::memory_order_release);
+        inferenceWorker.setBackend(std::move(candidate));
+        if (deviceConfigured)
+            prepare(configuredSampleRate, maximumBlockSize, configuredOutputChannels);
+        return true;
+    }
+    catch (...)
+    {
+        // Keep the previous usable backend active; fall back to bounded dry
+        // pass-through if even the rollback cannot be prepared.
+        try
+        {
+            restore(previous);
+        }
+        catch (...)
+        {
+            modelLatentDimensionCount.store(0, std::memory_order_release);
+            modelBackendConfigured.store(false, std::memory_order_release);
+            inferenceWorker.setBackend(nullptr);
+            release();
+        }
+        return false;
+    }
+}
+
 void RaveAudioEngine::setDryWet(const float newValue) noexcept
 {
     dryWetValue.store(juce::jlimit(0.0f, 1.0f, newValue), std::memory_order_relaxed);
@@ -70,6 +126,8 @@ void RaveAudioEngine::prepare(const double sampleRate,
 
     maximumBlockSize = std::max<std::size_t>(1, maximumSamplesPerBlock);
     configuredOutputChannels = std::max(1, outputChannelCount);
+    configuredSampleRate = sampleRate;
+    deviceConfigured = true;
 
     constexpr std::size_t inferenceQueueCapacity = 4;
     constexpr std::size_t dryQueueCapacity = inferenceQueueCapacity * 3;
@@ -96,6 +154,7 @@ void RaveAudioEngine::prepare(const double sampleRate,
 void RaveAudioEngine::release() noexcept
 {
     inferenceWorker.stop();
+    deviceConfigured = false;
 }
 
 void RaveAudioEngine::processAudio(

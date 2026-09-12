@@ -36,8 +36,13 @@ public:
     BackgroundModelLoader(const BackgroundModelLoader&) = delete;
     BackgroundModelLoader& operator=(const BackgroundModelLoader&) = delete;
 
-    // Returns false if another load is already in progress.
-    [[nodiscard]] bool start(std::string modelPath);
+    // Loads and qualifies a candidate on the loader thread at the intended
+    // runtime configuration. The candidate only reaches State::succeeded after
+    // it loaded, prepared, reset, and warmed up successfully; any mismatch,
+    // malformed metadata, bad shape, non-finite output, processing failure, or
+    // thrown backend exception produces State::failed with a diagnostic and no
+    // backend. Returns false if another load is already in progress.
+    [[nodiscard]] bool start(std::string modelPath, const ModelRuntimeConfiguration& configuration);
     [[nodiscard]] State state() const noexcept;
 
     // Returns the latest terminal result and resets the loader to idle. Calling

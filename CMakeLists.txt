@@ -32,6 +32,8 @@ add_library(rave_engine STATIC
     src/model/BackgroundModelLoader.cpp
     src/model/BackgroundModelLoader.h
     src/model/ModelBackend.h
+    src/model/ModelQualification.cpp
+    src/model/ModelQualification.h
 )
 
 target_include_directories(rave_engine PUBLIC src)

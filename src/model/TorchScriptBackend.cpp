@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -17,25 +16,40 @@ namespace
 {
 using MethodParameters = std::array<std::int64_t, 4>;
 
-std::optional<MethodParameters> readMethodParameters(const torch::jit::Module& module,
-                                                     const char* const attributeName)
+// Result of probing an optional nn~/RAVE metadata buffer. "present but not
+// valid" distinguishes malformed metadata, which must reject the model, from
+// absent metadata, which simply means the capability is unavailable.
+struct MethodParameterProbe
 {
-    if (!module.hasattr(attributeName))
-        return std::nullopt;
+    bool present = false;
+    bool valid = false;
+    MethodParameters parameters {};
+};
 
+MethodParameterProbe readMethodParameters(const torch::jit::Module& module,
+                                          const char* const attributeName)
+{
+    MethodParameterProbe probe;
+    if (!module.hasattr(attributeName))
+        return probe;
+
+    probe.present = true;
     const auto value = module.attr(attributeName);
     if (!value.isTensor())
-        return std::nullopt;
+        return probe;
 
     const auto tensor = value.toTensor().to(torch::kCPU).to(torch::kInt64).contiguous();
     if (tensor.numel() != 4)
-        return std::nullopt;
+        return probe;
 
     const auto* data = tensor.data_ptr<std::int64_t>();
     MethodParameters parameters { data[0], data[1], data[2], data[3] };
     if (std::any_of(parameters.begin(), parameters.end(), [](const auto item) { return item <= 0; }))
-        return std::nullopt;
-    return parameters;
+        return probe;
+
+    probe.valid = true;
+    probe.parameters = parameters;
+    return probe;
 }
 } // namespace
 
@@ -88,11 +102,16 @@ bool TorchScriptBackend::load(const std::string& modelPath, std::string& errorMe
         bool supportsLatentProcessing = false;
 
         const auto forwardParameters = readMethodParameters(*candidate, "forward_params");
-        if (forwardParameters.has_value())
+        if (forwardParameters.present && !forwardParameters.valid)
         {
-            inputChannels = static_cast<std::size_t>((*forwardParameters)[0]);
-            outputChannels = static_cast<std::size_t>((*forwardParameters)[2]);
-            if ((*forwardParameters)[1] != 1 || (*forwardParameters)[3] != 1)
+            errorMessage = "RAVE forward_params metadata is malformed";
+            return false;
+        }
+        if (forwardParameters.valid)
+        {
+            inputChannels = static_cast<std::size_t>(forwardParameters.parameters[0]);
+            outputChannels = static_cast<std::size_t>(forwardParameters.parameters[2]);
+            if (forwardParameters.parameters[1] != 1 || forwardParameters.parameters[3] != 1)
             {
                 errorMessage = "RAVE forward metadata uses an unsupported temporal ratio";
                 return false;
@@ -100,19 +119,29 @@ bool TorchScriptBackend::load(const std::string& modelPath, std::string& errorMe
         }
 
         const auto encodeParameters = readMethodParameters(*candidate, "encode_params");
+        if (encodeParameters.present && !encodeParameters.valid)
+        {
+            errorMessage = "RAVE encode_params metadata is malformed";
+            return false;
+        }
         const auto decodeParameters = readMethodParameters(*candidate, "decode_params");
+        if (decodeParameters.present && !decodeParameters.valid)
+        {
+            errorMessage = "RAVE decode_params metadata is malformed";
+            return false;
+        }
         const auto encodeMethod = candidate->find_method("encode");
         const auto decodeMethod = candidate->find_method("decode");
-        if (encodeParameters.has_value() && decodeParameters.has_value()
+        if (encodeParameters.valid && decodeParameters.valid
             && encodeMethod.has_value() && decodeMethod.has_value())
         {
-            const auto encodeOutputChannels = (*encodeParameters)[2];
-            const auto decodeInputChannels = (*decodeParameters)[0];
-            const auto encodeOutputRatio = (*encodeParameters)[3];
-            const auto decodeInputRatio = (*decodeParameters)[1];
+            const auto encodeOutputChannels = encodeParameters.parameters[2];
+            const auto decodeInputChannels = decodeParameters.parameters[0];
+            const auto encodeOutputRatio = encodeParameters.parameters[3];
+            const auto decodeInputRatio = decodeParameters.parameters[1];
             if (encodeOutputChannels != decodeInputChannels || encodeOutputRatio != decodeInputRatio
-                || (*encodeParameters)[0] != static_cast<std::int64_t>(inputChannels)
-                || (*decodeParameters)[2] != static_cast<std::int64_t>(outputChannels))
+                || encodeParameters.parameters[0] != static_cast<std::int64_t>(inputChannels)
+                || decodeParameters.parameters[2] != static_cast<std::int64_t>(outputChannels))
             {
                 errorMessage = "RAVE encode/decode metadata is inconsistent";
                 return false;
@@ -161,7 +190,15 @@ void TorchScriptBackend::prepare(const double sampleRate, const std::size_t maxi
 {
     impl->preparedSampleRate = sampleRate;
     impl->maximumBlockSize = maximumBlockSize;
-    impl->sampleRateMatches = impl->exportedSampleRate <= 0
+    impl->sampleRateMatches = supportsConfiguration(sampleRate, maximumBlockSize);
+}
+
+bool TorchScriptBackend::supportsConfiguration(const double sampleRate,
+                                               const std::size_t /*maximumBlockSize*/) const noexcept
+{
+    if (sampleRate <= 0.0)
+        return false;
+    return impl->exportedSampleRate <= 0
         || std::abs(sampleRate - static_cast<double>(impl->exportedSampleRate)) < 0.5;
 }
 

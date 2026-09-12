@@ -5,7 +5,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -53,6 +55,41 @@ public:
     std::atomic<bool> resetCalled { false };
     std::atomic<bool> failProcessing { false };
     std::thread::id processThread;
+};
+
+class ThrowingBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+    void reset() noexcept override {}
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+
+    bool process(const std::span<const float>,
+                 const std::span<const float>,
+                 const std::span<float>) override
+    {
+        throw std::runtime_error("inference exploded");
+    }
+};
+
+class NonFiniteBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+    void reset() noexcept override {}
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+
+    bool process(const std::span<const float> input,
+                 const std::span<const float>,
+                 const std::span<float> output) override
+    {
+        for (std::size_t index = 0; index < input.size(); ++index)
+            output[index] = input[index];
+        output[0] = std::numeric_limits<float>::quiet_NaN();
+        return true;
+    }
 };
 
 bool receiveWithin(rave::InferenceWorker& worker,
@@ -139,11 +176,106 @@ void testProcessingErrorsAreCounted()
     require(!worker.tryReceive(output.data(), output.size(), sampleCount), "failed processing emits no block");
     worker.stop();
 }
+void waitForProcessingError(rave::InferenceWorker& worker)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (worker.processingErrorCount() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+void testThrowingBackendIsCountedSafely()
+{
+    rave::InferenceWorker worker;
+    worker.setBackend(std::make_shared<ThrowingBackend>());
+    worker.prepare(48000.0, 4, 1);
+    require(worker.start(), "throwing-backend worker starts");
+
+    const std::array<float, 2> input { 1.0f, 2.0f };
+    require(worker.trySubmit(input.data(), input.size()), "throwing block submitted");
+    waitForProcessingError(worker);
+    require(worker.processingErrorCount() >= 1, "thrown backend exception counted");
+
+    std::array<float, 4> output {};
+    std::size_t sampleCount = 99;
+    require(!worker.tryReceive(output.data(), output.size(), sampleCount),
+            "thrown backend exception emits no block");
+    worker.stop();
+    require(!worker.isRunning(), "throwing-backend worker stops cleanly");
+}
+
+void testNonFiniteOutputIsDropped()
+{
+    rave::InferenceWorker worker;
+    worker.setBackend(std::make_shared<NonFiniteBackend>());
+    worker.prepare(48000.0, 4, 1);
+    require(worker.start(), "non-finite worker starts");
+
+    const std::array<float, 2> input { 1.0f, 2.0f };
+    require(worker.trySubmit(input.data(), input.size()), "non-finite block submitted");
+    waitForProcessingError(worker);
+    require(worker.processingErrorCount() >= 1, "non-finite output counted as processing error");
+
+    std::array<float, 4> output {};
+    std::size_t sampleCount = 99;
+    require(!worker.tryReceive(output.data(), output.size(), sampleCount),
+            "non-finite output is never emitted");
+    worker.stop();
+}
+
+void testRepeatedPrepareStartStopAndReplacementRemainsBounded()
+{
+    rave::InferenceWorker worker;
+    for (int cycle = 0; cycle < 3; ++cycle)
+    {
+        auto backend = std::make_shared<GainBackend>();
+        worker.setBackend(backend);
+        worker.prepare(48000.0, 4, 2);
+        require(worker.start(), "cycle worker starts");
+        require(worker.currentBackend() == backend, "active backend exposed while stopped");
+
+        const std::array<float, 2> input { 0.5f, 1.0f };
+        require(worker.trySubmit(input.data(), input.size(),
+                                 static_cast<std::uint64_t>(cycle + 1)),
+                "cycle block submitted");
+
+        std::array<float, 4> output {};
+        std::size_t sampleCount = 0;
+        std::uint64_t sequence = 0;
+        require(receiveWithin(worker, output.data(), output.size(), sampleCount, &sequence),
+                "cycle block processed");
+        require(sampleCount == input.size(), "cycle sample count");
+        require(sequence == static_cast<std::uint64_t>(cycle + 1), "cycle sequence");
+        require(output[0] == 1.0f && output[1] == 2.0f, "cycle backend output");
+
+        worker.stop();
+        require(!worker.isRunning(), "cycle worker stops");
+    }
+
+    auto runningBackend = std::make_shared<GainBackend>();
+    worker.setBackend(runningBackend);
+    worker.prepare(48000.0, 4, 2);
+    require(worker.start(), "replacement-refusal worker starts");
+    bool refused = false;
+    try
+    {
+        worker.setBackend(std::make_shared<GainBackend>());
+    }
+    catch (const std::logic_error&)
+    {
+        refused = true;
+    }
+    require(refused, "replacement refused while the worker is running");
+    require(worker.currentBackend() == runningBackend, "running backend unchanged after refusal");
+    worker.stop();
+}
 } // namespace
 
 int main()
 {
     testLifecycleAndProcessing();
     testProcessingErrorsAreCounted();
+    testThrowingBackendIsCountedSafely();
+    testNonFiniteOutputIsDropped();
+    testRepeatedPrepareStartStopAndReplacementRemainsBounded();
     std::cout << "InferenceWorker tests passed\n";
 }

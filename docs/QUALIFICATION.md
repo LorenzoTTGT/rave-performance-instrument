@@ -58,6 +58,30 @@ The model repository declares CC BY-NC 4.0. These files are approved here only a
 - A model whose exported sample rate differs from the active device/host rate must be rejected before activation until measured resampling exists.
 - Required streaming model methods and metadata are `forward`; optional latent operation requires compatible `encode`, `decode`, `forward_params`, `encode_params`, and `decode_params`.
 
+### Model activation and lifecycle
+
+- A candidate model is loaded, prepared, reset, and warmed up on the background
+  loader thread at the intended device sample rate and maximum block size
+  before it may be reported active; the audio callback never performs
+  qualification work.
+- A candidate whose declared sample rate differs from the active configuration
+  is rejected before activation with an actionable message that names both
+  rates; incompatible rates are never activated silently.
+- Warm-up must produce correctly sized, finite output on the exact runtime
+  processing path. Malformed metadata buffers, unexpected output shapes,
+  processing failures, and thrown backend exceptions fail qualification.
+- A failed qualification or activation keeps the previous usable model active
+  and reports the failure through the visible status surface. With no previous
+  model, the engine remains in bounded dry pass-through.
+- Non-finite runtime output from an already active model is dropped as a
+  processing error so the engine falls back to dry audio instead of emitting it.
+- Repeated model replacement, prepare/release cycles, editor closure, and
+  shutdown are bounded: loader and inference threads are joined, never leaked.
+- An in-process inference worker cannot contain a native LibTorch crash and
+  cannot forcibly cancel a stalled native inference call; both remain
+  process-level risks documented for this milestone. An optional separate
+  inference process stays a deferred option for unattended installations.
+
 ### Callback and block matrix
 
 Exercise these callback sizes at 48 kHz where the device/host supports them:

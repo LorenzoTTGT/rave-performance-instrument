@@ -87,8 +87,4 @@ private:
     std::vector<float> pendingLatentRestore;
     std::atomic<bool> hasQueuedModelRestore { false };
     std::atomic<std::uint64_t> currentModelRevision { 0 };
-    double preparedSampleRate = 0.0;
-    int preparedBlockSize = 0;
-    int preparedOutputChannels = 0;
-    bool prepared = false;
 };

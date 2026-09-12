@@ -19,7 +19,9 @@ public:
     void reset() noexcept override;
 
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept override;
-    [[nodiscard]] int modelSampleRate() const noexcept;
+    [[nodiscard]] int modelSampleRate() const noexcept override;
+    [[nodiscard]] bool supportsConfiguration(double sampleRate,
+                                             std::size_t maximumBlockSize) const noexcept override;
     [[nodiscard]] std::size_t inputChannelCount() const noexcept;
     [[nodiscard]] std::size_t outputChannelCount() const noexcept;
 

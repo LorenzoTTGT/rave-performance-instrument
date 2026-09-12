@@ -148,7 +148,9 @@ private:
                                      if (!file.existsAsFile())
                                          return;
 
-                                     if (safeThis->modelLoader->start(file.getFullPathName().toStdString()))
+                                     if (safeThis->modelLoader->start(
+                                             file.getFullPathName().toStdString(),
+                                             safeThis->engine.runtimeConfiguration()))
                                      {
                                          safeThis->loadModelButton.setEnabled(false);
                                          safeThis->status.setText("Loading " + file.getFileName() + "…",
@@ -168,14 +170,43 @@ private:
         loadModelButton.setEnabled(true);
         if (result.state == rave::BackgroundModelLoader::State::failed)
         {
-            status.setText("Model load failed: " + juce::String(result.errorMessage),
+            // Qualification failed, so the previous active model was never
+            // replaced and remains playable.
+            status.setText(juce::String("Model load failed: ") + juce::String(result.errorMessage)
+                               + (engine.hasModelBackend() ? " — previous model still active" : ""),
                            juce::dontSendNotification);
             return;
         }
 
+        // Detaching the audio callback before activation keeps every join and
+        // preparation step off the audio thread.
         deviceManager.removeAudioCallback(&engine);
-        engine.setModelBackend(std::move(result.backend));
+        juce::String activationError;
+        try
+        {
+            if (!engine.activateModelBackend(std::move(result.backend)))
+                activationError = "candidate was not accepted";
+        }
+        catch (const std::exception& exception)
+        {
+            activationError = exception.what();
+        }
+        catch (...)
+        {
+            activationError = "unknown activation error";
+        }
         deviceManager.addAudioCallback(&engine);
+
+        if (activationError.isNotEmpty())
+        {
+            status.setText("Model activation failed: " + activationError
+                               + (engine.hasModelBackend()
+                                      ? " — previous model still active"
+                                      : ""),
+                           juce::dontSendNotification);
+            return;
+        }
+
         rebuildLatentControls(engine.latentDimensionCount());
         const auto latentCount = engine.latentDimensionCount();
         status.setText(

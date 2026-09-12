@@ -1,6 +1,7 @@
 #include "engine/InferenceWorker.h"
 
 #include <chrono>
+#include <cmath>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -169,11 +170,38 @@ void InferenceWorker::run()
         for (std::size_t index = 0; index < latentControlCount; ++index)
             latentControlSnapshot[index] = latentControlValues[index].load(std::memory_order_relaxed);
 
-        const auto processed = backend->process(
-            std::span<const float>(inputBuffer.data(), sampleCount),
-            std::span<const float>(latentControlSnapshot.data(), latentControlSnapshot.size()),
-            std::span<float>(outputBuffer.data(), sampleCount));
+        // A throwing backend must fail this block, never the worker thread.
+        bool processed = false;
+        try
+        {
+            processed = backend->process(
+                std::span<const float>(inputBuffer.data(), sampleCount),
+                std::span<const float>(latentControlSnapshot.data(), latentControlSnapshot.size()),
+                std::span<float>(outputBuffer.data(), sampleCount));
+        }
+        catch (...)
+        {
+            processed = false;
+        }
+
         if (!processed)
+        {
+            processingErrors.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
+        // A stateful model can diverge at runtime; never emit non-finite audio.
+        // The engine falls back to dry output when no valid block arrives.
+        bool outputFinite = true;
+        for (std::size_t index = 0; index < sampleCount; ++index)
+        {
+            if (!std::isfinite(outputBuffer[index]))
+            {
+                outputFinite = false;
+                break;
+            }
+        }
+        if (!outputFinite)
         {
             processingErrors.fetch_add(1, std::memory_order_relaxed);
             continue;

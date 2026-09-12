@@ -22,6 +22,31 @@ void require(const bool condition, const char* const message)
     }
 }
 
+bool waitForModelSettled(RavePluginProcessor& processor)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (processor.isModelLoading() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    return !processor.isModelLoading();
+}
+
+bool loadModel(RavePluginProcessor& processor, const juce::File& modelFile)
+{
+    if (!processor.startModelLoad(modelFile))
+        return false;
+    return waitForModelSettled(processor) && processor.finishModelLoadIfReady();
+}
+
+void requireFiniteOutput(juce::AudioBuffer<float>& buffer)
+{
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+    {
+        const auto* samples = buffer.getReadPointer(channel);
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            require(std::isfinite(samples[sample]), "processed output stays finite");
+    }
+}
+
 juce::RangedAudioParameter* findParameter(juce::AudioProcessor& processor,
                                           const juce::String& parameterId)
 {
@@ -126,6 +151,106 @@ void testModelAndLatentRecall(const juce::File& modelFile)
     restored->releaseResources();
     original->releaseResources();
 }
+void testFailedLoadKeepsPreviousModel(const juce::File& modelFile, const juce::File& junkFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "first model activates");
+    require(processor->latentDimensionCount() == 2, "first model latent count");
+    require(processor->setLatentControl(0, 1.5f), "latent value set before failure");
+
+    require(loadModel(*processor, junkFile), "failing replacement is consumed");
+    require(processor->latentDimensionCount() == 2,
+            "previous model retained after failed replacement");
+    require(std::abs(processor->latentControl(0) - 1.5f) < 0.001f,
+            "latent state untouched by failed replacement");
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("failed"), "failure status is visible");
+    require(status.containsIgnoreCase("previous model still active"),
+            "failure status explains retention");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            buffer.setSample(channel, sample, 0.25f * static_cast<float>(sample + 1));
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
+
+void testSampleRateMismatchIsRejectedBeforeActivation(const juce::File& modelFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(44100.0, 8); // the fixture model is exported at 48 kHz
+    require(loadModel(*processor, modelFile), "mismatched candidate load is consumed");
+    require(processor->latentDimensionCount() == 0,
+            "mismatched candidate never became active");
+    require(processor->modelStatus().containsIgnoreCase("sample rate"),
+            "status names the sample-rate conflict");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
+
+void testEditorClosureDuringLoad(const juce::File& modelFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor(processor->createEditor());
+    require(editor != nullptr, "editor opens before activation");
+    require(processor->startModelLoad(modelFile), "load starts with editor open");
+    editor.reset(); // close the editor while the load is in flight
+    require(waitForModelSettled(*processor), "load completes without an editor");
+    require(processor->finishModelLoadIfReady(), "loaded model activates without an editor");
+    require(processor->latentDimensionCount() == 2, "latent metadata available after editor closure");
+
+    editor.reset(processor->createEditor());
+    require(editor != nullptr, "editor reopens after activation");
+    editor.reset();
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
+
+void testRepeatedReplacementRemainsBounded(const juce::File& modelFile, const juce::File& junkFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+
+    for (int cycle = 0; cycle < 2; ++cycle)
+    {
+        require(loadModel(*processor, modelFile), "successful cycle activates");
+        require(processor->latentDimensionCount() == 2, "successful cycle latent count");
+    }
+
+    require(loadModel(*processor, junkFile), "failed cycle is consumed");
+    require(processor->latentDimensionCount() == 2, "failed cycle retains previous model");
+
+    require(loadModel(*processor, modelFile), "post-failure cycle activates");
+    require(processor->latentDimensionCount() == 2, "post-failure cycle latent count");
+    require(processor->modelRevision() >= 4, "each replacement attempt bumps the revision");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
 } // namespace
 
 int main(const int argc, const char* const* argv)
@@ -133,6 +258,16 @@ int main(const int argc, const char* const* argv)
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
     testFactoryAudioAndState();
     if (argc == 2)
+    {
         testModelAndLatentRecall(juce::File(argv[1]));
+
+        auto junkFile = juce::File::createTempFile("rave-invalid-model");
+        junkFile.replaceWithText("this is not a TorchScript model");
+        testFailedLoadKeepsPreviousModel(juce::File(argv[1]), junkFile);
+        testSampleRateMismatchIsRejectedBeforeActivation(juce::File(argv[1]));
+        testEditorClosureDuringLoad(juce::File(argv[1]));
+        testRepeatedReplacementRemainsBounded(juce::File(argv[1]), junkFile);
+        junkFile.deleteFile();
+    }
     std::cout << "PluginProcessor tests passed\n";
 }

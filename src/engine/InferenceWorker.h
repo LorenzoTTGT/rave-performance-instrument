@@ -27,6 +27,11 @@ public:
     InferenceWorker& operator=(const InferenceWorker&) = delete;
 
     void setBackend(ModelBackendPtr newBackend);
+
+    // Only meaningful while the worker is stopped (message-thread ownership);
+    // used to snapshot the active backend for transactional replacement.
+    [[nodiscard]] ModelBackendPtr currentBackend() const noexcept { return backend; }
+
     void prepare(double sampleRate,
                  std::size_t maximumSamplesPerBlock,
                  std::size_t queueCapacity = 4);

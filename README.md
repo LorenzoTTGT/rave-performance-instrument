@@ -49,8 +49,9 @@ Start with input selection, an optional file player, one model, dry/wet mixing, 
 - Non-blocking UI exchange for controls and metering.
 - The audio callback must never wait for inference.
 - Define a controlled-fade fallback and visible overload indicator for missed inference deadlines.
+- An in-process inference worker cannot contain a native LibTorch crash and cannot forcibly cancel a stalled native inference call; both are documented process-level risks for this milestone.
 - Measure model, buffering, resampling, and device latency; compensate the dry path and report plugin latency accurately.
-- Consider an optional separate inference process later if unattended installations become important, since a worker thread does not contain native runtime crashes.
+- Consider an optional separate inference process later if unattended installations become important.
 
 ## Runtime strategy
 
@@ -84,8 +85,18 @@ The repository currently provides:
   → `decode`; controls are atomically snapshotted by the inference worker.
 - A scrollable latent-fader surface generated from each model's reported latent
   dimension count, with double-click reset to zero.
-- A native model chooser backed by off-thread loading; activating a loaded model
-  safely detaches and restarts the audio callback around backend replacement.
+- A native model chooser backed by off-thread loading and qualification: every
+  candidate is loaded, prepared, reset, and warmed up at the intended sample
+  rate and block size before activation. Incompatible sample rates, malformed
+  metadata, unexpected output shapes, non-finite warm-up output, processing
+  failures, and thrown backend exceptions fail qualification, keep the previous
+  model active, and surface an actionable status message.
+- Transactional engine activation restores the previous usable backend when a
+  candidate fails to install; repeated replacement, prepare/release cycles,
+  editor closure, and shutdown remain bounded.
+- A native model chooser that safely detaches and restarts the audio callback
+  around backend replacement, so no loading or preparation work ever runs in
+  the callback.
 - CTest coverage for queue behavior and, when Python Torch and LibTorch are
   configured, end-to-end TorchScript loading, metadata, and latent inference.
 

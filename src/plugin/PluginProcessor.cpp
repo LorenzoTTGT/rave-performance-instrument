@@ -55,19 +55,14 @@ RavePluginProcessor::~RavePluginProcessor()
 
 void RavePluginProcessor::prepareToPlay(const double sampleRate, const int samplesPerBlock)
 {
-    preparedSampleRate = sampleRate;
-    preparedBlockSize = std::max(1, samplesPerBlock);
-    preparedOutputChannels = getTotalNumOutputChannels();
-    prepared = true;
     engine.prepare(sampleRate,
-                   static_cast<std::size_t>(preparedBlockSize),
-                   preparedOutputChannels);
+                   static_cast<std::size_t>(std::max(1, samplesPerBlock)),
+                   getTotalNumOutputChannels());
 }
 
 void RavePluginProcessor::releaseResources()
 {
     engine.release();
-    prepared = false;
 }
 
 bool RavePluginProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -249,7 +244,8 @@ bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
 {
 #if RAVE_HAS_LIBTORCH
     if (!modelFile.existsAsFile() || modelLoader == nullptr
-        || !modelLoader->start(modelFile.getFullPathName().toStdString()))
+        || !modelLoader->start(modelFile.getFullPathName().toStdString(),
+                               engine.runtimeConfiguration()))
         return false;
 
     const juce::ScopedLock lock(modelStateLock);
@@ -288,8 +284,11 @@ bool RavePluginProcessor::finishModelLoadIfReady()
 
     if (result.state == rave::BackgroundModelLoader::State::failed)
     {
+        // Qualification failed, so the previous active model (if any) was never
+        // replaced and remains playable.
         const juce::ScopedLock lock(modelStateLock);
-        currentModelStatus = "Load failed: " + juce::String(result.errorMessage);
+        currentModelStatus = "Model load failed: " + juce::String(result.errorMessage)
+            + (engine.hasModelBackend() ? " — previous model still active" : "");
         currentModelRevision.fetch_add(1, std::memory_order_release);
         return true;
     }
@@ -363,7 +362,8 @@ void RavePluginProcessor::timerCallback()
         return;
     }
 
-    if (modelLoader->start(modelFile.getFullPathName().toStdString()))
+    if (modelLoader->start(modelFile.getFullPathName().toStdString(),
+                           engine.runtimeConfiguration()))
     {
         const juce::ScopedLock lock(modelStateLock);
         pendingModelFile = modelFile;
@@ -407,28 +407,46 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
                                         const juce::File& modelFile,
                                         const std::vector<float>& restoredLatents)
 {
+    bool activated = false;
+    juce::String activationError;
+
     suspendProcessing(true);
     {
         const juce::ScopedLock callbackGuard(getCallbackLock());
-        engine.release();
-        engine.setModelBackend(std::move(backend));
-        if (prepared)
+        try
         {
-            engine.prepare(preparedSampleRate,
-                           static_cast<std::size_t>(preparedBlockSize),
-                           preparedOutputChannels);
+            activated = engine.activateModelBackend(std::move(backend));
+            if (activated)
+            {
+                const auto restoreCount = std::min(restoredLatents.size(), engine.latentDimensionCount());
+                for (std::size_t index = 0; index < restoreCount; ++index)
+                    static_cast<void>(engine.setLatentControl(index, restoredLatents[index]));
+            }
         }
-
-        const auto restoreCount = std::min(restoredLatents.size(), engine.latentDimensionCount());
-        for (std::size_t index = 0; index < restoreCount; ++index)
-            static_cast<void>(engine.setLatentControl(index, restoredLatents[index]));
+        catch (const std::exception& exception)
+        {
+            activationError = exception.what();
+        }
+        catch (...)
+        {
+            activationError = "unknown activation error";
+        }
     }
     suspendProcessing(false);
 
     const juce::ScopedLock lock(modelStateLock);
-    activeModelFile = modelFile;
-    currentModelStatus = modelFile.getFileName() + " active — "
-        + juce::String(engine.latentDimensionCount()) + " latent dimensions";
+    if (activated)
+    {
+        activeModelFile = modelFile;
+        currentModelStatus = modelFile.getFileName() + " active — "
+            + juce::String(engine.latentDimensionCount()) + " latent dimensions";
+    }
+    else
+    {
+        currentModelStatus = "Model activation failed: "
+            + (activationError.isNotEmpty() ? activationError : juce::String("candidate was not accepted"))
+            + (engine.hasModelBackend() ? " — previous model still active" : "");
+    }
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 

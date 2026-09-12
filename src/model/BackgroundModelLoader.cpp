@@ -1,5 +1,7 @@
 #include "model/BackgroundModelLoader.h"
 
+#include "model/ModelQualification.h"
+
 #include <exception>
 #include <stdexcept>
 #include <utility>
@@ -19,7 +21,7 @@ BackgroundModelLoader::~BackgroundModelLoader()
         loaderThread.join();
 }
 
-bool BackgroundModelLoader::start(std::string modelPath)
+bool BackgroundModelLoader::start(std::string modelPath, const ModelRuntimeConfiguration& configuration)
 {
     if (currentState.load(std::memory_order_acquire) == State::loading)
         return false;
@@ -32,7 +34,7 @@ bool BackgroundModelLoader::start(std::string modelPath)
     }
     currentState.store(State::loading, std::memory_order_release);
 
-    loaderThread = std::thread([this, path = std::move(modelPath)] {
+    loaderThread = std::thread([this, path = std::move(modelPath), configuration] {
         ModelBackendPtr candidate;
         std::string error;
         State completedState = State::failed;
@@ -46,7 +48,11 @@ bool BackgroundModelLoader::start(std::string modelPath)
             }
             else if (candidate->load(path, error))
             {
-                completedState = State::succeeded;
+                error = qualifyModelBackend(*candidate, configuration);
+                if (error.empty())
+                    completedState = State::succeeded;
+                else
+                    candidate.reset();
             }
             else if (error.empty())
             {

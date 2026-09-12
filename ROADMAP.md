@@ -8,7 +8,7 @@ Generate/prior operation, elaborate modulation, effects, expanded routing, multi
 
 ## Current baseline
 
-The repository currently contains a shared JUCE audio engine, standalone application, VST3/AU effect targets, background TorchScript loading, RAVE metadata probing, asynchronous inference, dry/wet mixing, latent controls, eight stable plugin macros, plugin MIDI learn, and plugin state recall.
+The repository currently contains a shared JUCE audio engine, standalone application, VST3/AU effect targets, background TorchScript loading with off-thread candidate qualification (prepare, reset, warm-up, and finite-output validation at the intended sample rate and block size), transactional model activation that retains the previous usable backend on failure, RAVE metadata probing, asynchronous inference with exception and non-finite output guards, dry/wet mixing, latent controls, eight stable plugin macros, plugin MIDI learn, and plugin state recall.
 
 Verified locally on the current working tree:
 
@@ -17,17 +17,17 @@ Verified locally on the current working tree:
 - VST3 and AU bundles build and pass strict ad-hoc signature verification.
 - A generated RAVE-like TorchScript fixture verifies plugin model-path and latent recall.
 
-The plugin/recall work after commit `d7c63b9f5394dcfc8e0968905ba3e88865e6afb0` is currently uncommitted. Existing synthetic tests do not qualify real RAVE exports or DAW behavior.
+Existing synthetic tests qualify candidate lifecycle behavior (warm-up failure, sample-rate mismatch, malformed metadata, non-finite output, throwing backends, repeated replacement) but do not yet exercise real RAVE exports or DAW hosts.
 
 ## Known priority gaps
 
 1. `RaveAudioEngine` can switch abruptly between current dry audio and delayed wet/dry output; it does not yet expose a fixed timeline or click-free recovery.
 2. Variable callback sizes can cause valid wet blocks to be discarded, and plugin latency is not reported.
-3. Models are loaded but not warmed up and qualified at the active sample rate before activation.
+3. Candidate qualification uses synthetic fixtures; streaming/reset confirmation with selected real RAVE exports is still pending.
 4. A saved model path that is already missing is silently skipped during state restore instead of producing the documented visible failure.
 5. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
 6. Standalone still lacks device selection, MIDI learn, and versioned preset save/load.
-7. State parsing and backend output validation need stronger bounds, migration, finite-value, and failure tests.
+7. State parsing needs stronger bounds and migration tests (RAVE-04); backend output validation now rejects malformed metadata, unexpected shapes, non-finite output, and backend exceptions at qualification and runtime.
 8. Current tests use synthetic models and do not establish real streaming RAVE performance, host compatibility, or soak reliability.
 
 ## Phases
@@ -51,13 +51,13 @@ Define what “dependable instrument” means before optimizing implementation.
 
 Depends on: RAVE-01 verified.
 
-- [ ] Warm up and validate candidate models off the audio callback at the intended runtime configuration before reporting them active.
-- [ ] Confirm streaming/reset behavior with selected real RAVE exports.
-- [ ] Reject unsupported sample rates clearly before activation, or add measured resampling with explicit latency.
-- [ ] Keep the previous working model active when candidate qualification fails.
-- [ ] Reject malformed metadata, non-finite output, unexpected shapes, and backend exceptions with bounded dry fallback.
-- [ ] Audit model replacement, prepare/release, editor closure, and shutdown for synchronization and blocking risks.
-- [ ] Document that an in-process worker cannot contain native LibTorch crashes or forcibly cancel stalled native inference.
+- [x] Warm up and validate candidate models off the audio callback at the intended runtime configuration before reporting them active.
+- [ ] Confirm streaming/reset behavior with selected real RAVE exports (requires the licensed local fixtures recorded in `docs/QUALIFICATION.md`).
+- [x] Reject unsupported sample rates clearly before activation, or add measured resampling with explicit latency.
+- [x] Keep the previous working model active when candidate qualification fails.
+- [x] Reject malformed metadata, non-finite output, unexpected shapes, and backend exceptions with bounded dry fallback.
+- [x] Audit model replacement, prepare/release, editor closure, and shutdown for synchronization and blocking risks.
+- [x] Document that an in-process worker cannot contain native LibTorch crashes or forcibly cancel stalled native inference.
 
 **Focused checks:**
 

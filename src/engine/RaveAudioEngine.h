@@ -17,6 +17,19 @@ class RaveAudioEngine final : public juce::AudioIODeviceCallback
 public:
     // Replace models only while the audio device callback is stopped.
     void setModelBackend(ModelBackendPtr backend);
+
+    // Transactional replacement for callers that already suspend or stop the
+    // device callback: joins the inference worker, installs the candidate, and
+    // re-prepares it at the current configuration. When any step fails the
+    // previous usable backend is restored and re-prepared, and the method
+    // returns false so the caller can report an actionable failure. Preparing a
+    // candidate never happens inside the audio callback.
+    [[nodiscard]] bool activateModelBackend(ModelBackendPtr candidate);
+
+    // The configuration models must be qualified against: the last prepared
+    // device configuration, or the documented default before the first prepare.
+    [[nodiscard]] ModelRuntimeConfiguration runtimeConfiguration() const noexcept;
+
     [[nodiscard]] bool hasModelBackend() const noexcept;
 
     void setDryWet(float newValue) noexcept;
@@ -67,6 +80,8 @@ private:
     std::atomic<std::uint64_t> alignmentErrors { 0 };
     std::uint64_t nextSequence = 1;
     std::size_t maximumBlockSize = 0;
+    double configuredSampleRate = 0.0;
     int configuredOutputChannels = 0;
+    bool deviceConfigured = false;
 };
 } // namespace rave
