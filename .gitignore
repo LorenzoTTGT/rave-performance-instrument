@@ -6,3 +6,4 @@ CMakeCache.txt
 *.ninja
 .ninja_*
 compile_commands.json
+.qualification-models/

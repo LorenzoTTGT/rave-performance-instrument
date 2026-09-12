@@ -36,12 +36,12 @@ The plugin/recall work after commit `d7c63b9f5394dcfc8e0968905ba3e88865e6afb0` i
 
 Define what “dependable instrument” means before optimizing implementation.
 
-- [ ] Record the source revision, compiler, JUCE/LibTorch versions, Mac hardware, and build configuration used for qualification.
-- [ ] Select permitted real streaming RAVE exports and record identity, provenance, sample rate, channel count, latent count, and reset requirements.
-- [ ] Define supported devices, DAW hosts, sample rates, callback sizes, and mono/stereo routing behavior.
-- [ ] Define measurable callback-time, inference-time, end-to-end latency, overload-recovery, and soak thresholds.
-- [ ] Preserve existing plugin parameter IDs: `dryWet` and `macro1` through `macro8`.
-- [ ] Confirm the LibTorch-enabled test suite is actually registered with `ctest -N`.
+- [x] Record the source revision, compiler, JUCE/LibTorch versions, Mac hardware, and build configuration used for qualification.
+- [x] Select permitted real streaming RAVE exports and record identity, provenance, sample rate, channel count, latent count, and reset requirements.
+- [x] Define supported devices, DAW hosts, sample rates, callback sizes, and mono/stereo routing behavior.
+- [x] Define measurable callback-time, inference-time, end-to-end latency, overload-recovery, and soak thresholds.
+- [x] Preserve existing plugin parameter IDs: `dryWet` and `macro1` through `macro8`.
+- [x] Confirm the LibTorch-enabled test suite is actually registered with `ctest -N`.
 
 **Verification:** full current build/test matrix and a checked qualification specification.
 
