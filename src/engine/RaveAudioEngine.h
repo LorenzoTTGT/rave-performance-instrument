@@ -22,9 +22,21 @@ public:
     void setDryWet(float newValue) noexcept;
     [[nodiscard]] float dryWet() const noexcept;
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept;
+    [[nodiscard]] float latentControl(std::size_t index) const noexcept;
     [[nodiscard]] bool setLatentControl(std::size_t index, float value) noexcept;
     [[nodiscard]] std::uint64_t missedInferenceDeadlineCount() const noexcept;
     [[nodiscard]] std::uint64_t alignmentErrorCount() const noexcept;
+
+    // Device-independent lifecycle used by standalone and plugin adapters.
+    void prepare(double sampleRate,
+                 std::size_t maximumSamplesPerBlock,
+                 int outputChannelCount);
+    void release() noexcept;
+    void processAudio(const float* const* inputChannelData,
+                      int numInputChannels,
+                      float* const* outputChannelData,
+                      int numOutputChannels,
+                      int numSamples) noexcept;
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;

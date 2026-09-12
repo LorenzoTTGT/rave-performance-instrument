@@ -39,6 +39,11 @@ std::size_t RaveAudioEngine::latentDimensionCount() const noexcept
     return modelLatentDimensionCount.load(std::memory_order_acquire);
 }
 
+float RaveAudioEngine::latentControl(const std::size_t index) const noexcept
+{
+    return inferenceWorker.latentControl(index);
+}
+
 bool RaveAudioEngine::setLatentControl(const std::size_t index, const float value) noexcept
 {
     return inferenceWorker.setLatentControl(index, value);
@@ -54,18 +59,17 @@ std::uint64_t RaveAudioEngine::alignmentErrorCount() const noexcept
     return alignmentErrors.load(std::memory_order_relaxed);
 }
 
-void RaveAudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* const device)
+void RaveAudioEngine::prepare(const double sampleRate,
+                              const std::size_t maximumSamplesPerBlock,
+                              const int outputChannelCount)
 {
     inferenceWorker.stop();
     nextSequence = 1;
     missedDeadlines.store(0, std::memory_order_relaxed);
     alignmentErrors.store(0, std::memory_order_relaxed);
 
-    if (device == nullptr)
-        return;
-
-    maximumBlockSize = static_cast<std::size_t>(std::max(1, device->getCurrentBufferSizeSamples()));
-    configuredOutputChannels = std::max(1, device->getActiveOutputChannels().countNumberOfSetBits());
+    maximumBlockSize = std::max<std::size_t>(1, maximumSamplesPerBlock);
+    configuredOutputChannels = std::max(1, outputChannelCount);
 
     constexpr std::size_t inferenceQueueCapacity = 4;
     constexpr std::size_t dryQueueCapacity = inferenceQueueCapacity * 3;
@@ -84,23 +88,22 @@ void RaveAudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* const device)
 
     if (hasModelBackend())
     {
-        inferenceWorker.prepare(device->getCurrentSampleRate(), maximumBlockSize, inferenceQueueCapacity);
+        inferenceWorker.prepare(sampleRate, maximumBlockSize, inferenceQueueCapacity);
         static_cast<void>(inferenceWorker.start());
     }
 }
 
-void RaveAudioEngine::audioDeviceStopped()
+void RaveAudioEngine::release() noexcept
 {
     inferenceWorker.stop();
 }
 
-void RaveAudioEngine::audioDeviceIOCallbackWithContext(
+void RaveAudioEngine::processAudio(
     const float* const* inputChannelData,
     const int numInputChannels,
     float* const* outputChannelData,
     const int numOutputChannels,
-    const int numSamples,
-    const juce::AudioIODeviceCallbackContext&)
+    const int numSamples) noexcept
 {
     if (!inferenceWorker.isRunning() || numInputChannels <= 0 || inputChannelData == nullptr
         || inputChannelData[0] == nullptr || numSamples <= 0
@@ -190,6 +193,39 @@ void RaveAudioEngine::audioDeviceIOCallbackWithContext(
         for (int sample = 0; sample < numSamples; ++sample)
             output[sample] = dry[sample] * dryGain + wetBuffer[static_cast<std::size_t>(sample)] * wetGain;
     }
+}
+
+void RaveAudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* const device)
+{
+    if (device == nullptr)
+    {
+        release();
+        return;
+    }
+
+    prepare(device->getCurrentSampleRate(),
+            static_cast<std::size_t>(std::max(1, device->getCurrentBufferSizeSamples())),
+            device->getActiveOutputChannels().countNumberOfSetBits());
+}
+
+void RaveAudioEngine::audioDeviceStopped()
+{
+    release();
+}
+
+void RaveAudioEngine::audioDeviceIOCallbackWithContext(
+    const float* const* inputChannelData,
+    const int numInputChannels,
+    float* const* outputChannelData,
+    const int numOutputChannels,
+    const int numSamples,
+    const juce::AudioIODeviceCallbackContext&)
+{
+    processAudio(inputChannelData,
+                 numInputChannels,
+                 outputChannelData,
+                 numOutputChannels,
+                 numSamples);
 }
 
 void RaveAudioEngine::renderDry(const float* const* inputChannelData,

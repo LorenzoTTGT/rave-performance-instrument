@@ -117,6 +117,13 @@ std::size_t InferenceWorker::latentDimensionCount() const noexcept
     return latentControlCount;
 }
 
+float InferenceWorker::latentControl(const std::size_t index) const noexcept
+{
+    return index < latentControlCount && latentControlValues != nullptr
+        ? latentControlValues[index].load(std::memory_order_relaxed)
+        : 0.0f;
+}
+
 bool InferenceWorker::setLatentControl(const std::size_t index, const float value) noexcept
 {
     if (index >= latentControlCount || latentControlValues == nullptr)

@@ -60,7 +60,17 @@ Keep inference behind a replaceable backend interface. Begin with LibTorch and C
 
 The repository currently provides:
 
-- A JUCE standalone application with live audio pass-through and dry/wet UI.
+- A JUCE standalone application plus VST3 and Audio Unit effect targets, all
+  sharing the same `RaveAudioEngine` processing path.
+- Host-visible dry/wet plus eight stable macro parameters mapped to latent
+  dimensions 1–8, with remaining dimensions available as direct UI controls.
+- MIDI CC learn for dry/wet and each fixed macro; assignments and parameter
+  values are included in plugin state.
+- Plugin session recall for the model path and every latent offset. Model reload
+  remains asynchronous and works without opening the editor; missing files fail
+  visibly instead of blocking audio.
+- A custom plugin editor with background TorchScript model selection and a
+  scrollable model-driven latent control surface.
 - Preallocated, bounded SPSC audio-block queues feeding a dedicated inference
   worker; audio submission and retrieval never wait for model execution.
 - Sequence-tagged dry and wet blocks so asynchronous results are mixed with
@@ -79,7 +89,10 @@ The repository currently provides:
 - CTest coverage for queue behavior and, when Python Torch and LibTorch are
   configured, end-to-end TorchScript loading, metadata, and latent inference.
 
-Smooth fallback fades, MIDI learn, preset recall, and reported host latency are
+Latent dimensions beyond the eight macros remain UI controls rather than dynamic
+host parameters because DAWs expect a stable parameter list. Saved model paths
+must remain available on the same machine. Smooth fallback fades, portable model
+identity resolution, standalone preset/MIDI learn, and reported host latency are
 not implemented yet.
 
 ## Building
@@ -101,7 +114,16 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Use `-DRAVE_ENABLE_LIBTORCH=OFF` for an engine/UI-only build.
+Use `-DRAVE_ENABLE_LIBTORCH=OFF` for an engine/UI-only build. On macOS the
+build produces:
+
+- `build/rave_instrument_artefacts/.../RAVE Performance Instrument.app`
+- `build/rave_plugin_artefacts/.../VST3/RAVE Performance Instrument.vst3`
+- `build/rave_plugin_artefacts/.../AU/RAVE Performance Instrument.component`
+
+Debug plugin bundles are ad-hoc signed after JUCE generates VST3 metadata so
+local hosts can validate the complete bundle. Distribution signing and
+notarization remain release steps.
 
 ## First milestone
 

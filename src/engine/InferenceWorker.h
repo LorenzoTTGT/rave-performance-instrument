@@ -44,6 +44,7 @@ public:
                                   std::uint64_t* sequence = nullptr) noexcept;
 
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept;
+    [[nodiscard]] float latentControl(std::size_t index) const noexcept;
     [[nodiscard]] bool setLatentControl(std::size_t index, float value) noexcept;
 
     [[nodiscard]] std::uint64_t droppedInputBlockCount() const noexcept;

@@ -1,0 +1,138 @@
+{
+  "format": "agent-profile-roadmap-v2",
+  "roadmapId": "default",
+  "state": {
+    "version": 2,
+    "revision": 1,
+    "title": "Dependable RAVE Performance Instrument",
+    "phases": [
+      {
+        "id": "rave-01-qualification",
+        "title": "Qualification contract",
+        "acceptance": [
+          "Record reproducible toolchain, hardware, model, host, sample-rate and block-size matrix",
+          "Define measurable latency, timing, overload recovery and soak thresholds",
+          "Preserve existing host parameter IDs and verify registered test matrix"
+        ],
+        "dependsOn": [],
+        "deliverThrough": "pushed",
+        "target": {
+          "remote": "origin",
+          "branch": "main"
+        },
+        "generation": 1,
+        "work": "todo",
+        "receipts": {}
+      },
+      {
+        "id": "rave-02-model-lifecycle",
+        "title": "Model activation and lifecycle reliability",
+        "acceptance": [
+          "Warm up and validate candidates before activation",
+          "Reject incompatible rates, metadata, shapes and non-finite output safely",
+          "Keep the previous working model after candidate failure",
+          "Cover repeated replacement, reset, shutdown and backend failure cases"
+        ],
+        "dependsOn": [
+          {
+            "id": "rave-01-qualification",
+            "through": "verified"
+          }
+        ],
+        "deliverThrough": "pushed",
+        "target": {
+          "remote": "origin",
+          "branch": "main"
+        },
+        "generation": 1,
+        "work": "todo",
+        "receipts": {}
+      },
+      {
+        "id": "rave-03-timing-latency",
+        "title": "Stable timing, fallback and latency",
+        "acceptance": [
+          "Use a fixed output timeline with consistently aligned dry and wet paths",
+          "Report plugin latency accurately",
+          "Smooth dry/wet, fallback and recovery transitions",
+          "Pass variable-block, impulse-latency, delayed-worker and saturation tests",
+          "Expose bounded readiness, latency and overload telemetry"
+        ],
+        "dependsOn": [
+          {
+            "id": "rave-01-qualification",
+            "through": "verified"
+          },
+          {
+            "id": "rave-02-model-lifecycle",
+            "through": "verified"
+          }
+        ],
+        "deliverThrough": "pushed",
+        "target": {
+          "remote": "origin",
+          "branch": "main"
+        },
+        "generation": 1,
+        "work": "todo",
+        "receipts": {}
+      },
+      {
+        "id": "rave-04-controls-recall",
+        "title": "Reliable controls, presets and standalone parity",
+        "acceptance": [
+          "Preserve all latent values across prepare and device lifecycle changes",
+          "Bound and version state parsing and handle missing/superseded models visibly",
+          "Add standalone device selection, MIDI learn and versioned preset recall",
+          "Test more than eight latent dimensions through restore and audio processing"
+        ],
+        "dependsOn": [
+          {
+            "id": "rave-02-model-lifecycle",
+            "through": "verified"
+          }
+        ],
+        "deliverThrough": "pushed",
+        "target": {
+          "remote": "origin",
+          "branch": "main"
+        },
+        "generation": 1,
+        "work": "todo",
+        "receipts": {}
+      },
+      {
+        "id": "rave-05-qualification",
+        "title": "Real-model and host qualification",
+        "acceptance": [
+          "Benchmark selected real streaming RAVE exports on the target Mac",
+          "Complete the agreed soak and overload recovery tests",
+          "Validate standalone, VST3 and AU behavior in selected hosts",
+          "Repeat full build/test/signature matrix and document measured limitations"
+        ],
+        "dependsOn": [
+          {
+            "id": "rave-03-timing-latency",
+            "through": "verified"
+          },
+          {
+            "id": "rave-04-controls-recall",
+            "through": "verified"
+          }
+        ],
+        "deliverThrough": "pushed",
+        "target": {
+          "remote": "origin",
+          "branch": "main"
+        },
+        "generation": 1,
+        "work": "todo",
+        "receipts": {}
+      }
+    ],
+    "updatedAt": "2026-09-12T19:53:52.888Z",
+    "sourceRoadmap": "ROADMAP.md"
+  },
+  "ancestors": [],
+  "hash": "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
+}

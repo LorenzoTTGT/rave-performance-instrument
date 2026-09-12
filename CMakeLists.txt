@@ -117,3 +117,76 @@ target_link_libraries(rave_instrument
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+juce_add_plugin(rave_plugin
+    COMPANY_NAME "RAVE Performance Instrument"
+    PLUGIN_MANUFACTURER_CODE RvAI
+    PLUGIN_CODE RvPI
+    BUNDLE_ID "org.raveperformance.instrument.plugin"
+    PRODUCT_NAME "RAVE Performance Instrument"
+    FORMATS VST3 AU
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT TRUE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    COPY_PLUGIN_AFTER_BUILD FALSE
+)
+
+target_sources(rave_plugin PRIVATE
+    src/plugin/PluginEditor.cpp
+    src/plugin/PluginEditor.h
+    src/plugin/PluginProcessor.cpp
+    src/plugin/PluginProcessor.h
+)
+
+target_include_directories(rave_plugin PRIVATE src)
+
+juce_generate_juce_header(rave_plugin)
+
+target_compile_definitions(rave_plugin
+    PRIVATE
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_VST3_CAN_REPLACE_VST2=0
+)
+
+target_link_libraries(rave_plugin
+    PRIVATE
+        rave_engine
+        juce::juce_audio_processors
+        juce::juce_gui_extra
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags
+)
+
+if(APPLE)
+    add_custom_command(TARGET rave_plugin_VST3 POST_BUILD
+        COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:rave_plugin_VST3>"
+        VERBATIM
+    )
+    add_custom_command(TARGET rave_plugin_AU POST_BUILD
+        COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:rave_plugin_AU>"
+        VERBATIM
+    )
+endif()
+
+if(BUILD_TESTING)
+    add_executable(rave_plugin_tests tests/PluginProcessorTests.cpp)
+    target_include_directories(rave_plugin_tests PRIVATE src)
+    target_link_libraries(rave_plugin_tests PRIVATE
+        rave_plugin
+        juce::juce_audio_processors
+    )
+    add_test(NAME rave_plugin_tests COMMAND rave_plugin_tests)
+
+    if(Torch_FOUND AND Python3_Interpreter_FOUND)
+        add_test(
+            NAME rave_plugin_model_recall_tests
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_plugin_model_recall_test.py"
+                    "$<TARGET_FILE:rave_plugin_tests>"
+        )
+    endif()
+endif()
