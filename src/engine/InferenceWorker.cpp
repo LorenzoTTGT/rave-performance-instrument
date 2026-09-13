@@ -141,6 +141,16 @@ void InferenceWorker::stop() noexcept
     running.store(false, std::memory_order_release);
 }
 
+void InferenceWorker::resetRuntimeTelemetry() noexcept
+{
+    if (isRunning())
+        return;
+    droppedInputs.store(0, std::memory_order_relaxed);
+    droppedOutputs.store(0, std::memory_order_relaxed);
+    processingErrors.store(0, std::memory_order_relaxed);
+    resetErrors.store(0, std::memory_order_relaxed);
+}
+
 bool InferenceWorker::isRunning() const noexcept
 {
     return running.load(std::memory_order_acquire);

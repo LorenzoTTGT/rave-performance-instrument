@@ -44,6 +44,9 @@ public:
     // startError (when non-null) receives the actionable diagnostic.
     [[nodiscard]] bool start(std::string* startError = nullptr);
     void stop() noexcept;
+    // Clears epoch-scoped counters while stopped. A subsequent reset failure
+    // in start() is therefore visible in the new epoch.
+    void resetRuntimeTelemetry() noexcept;
     [[nodiscard]] bool isRunning() const noexcept;
 
     [[nodiscard]] bool trySubmit(const float* samples,

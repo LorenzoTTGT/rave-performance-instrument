@@ -314,6 +314,7 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         startError->clear();
 
     inferenceWorker.stop();
+    inferenceWorker.resetRuntimeTelemetry();
     runtimePrepared.store(false, std::memory_order_release);
     sampleClock = 0;
     submittedFrame = 0;
@@ -328,6 +329,19 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
     configuredSampleRate = sampleRate;
     configuredOutputChannels = std::max(1, outputChannelCount);
     const auto blockSize = std::max<std::size_t>(1, maximumSamplesPerBlock);
+
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0
+        || std::ceil(sampleRate * 0.005) > static_cast<double>(inferenceQuantumSamples))
+    {
+        const auto cause = !std::isfinite(sampleRate) || sampleRate <= 0.0
+            ? std::string("invalid audio sample rate")
+            : std::string("sample rate requires a transport fade longer than 2048 samples");
+        if (startError != nullptr)
+            *startError = cause;
+        setLifecycleStateLocked(cause + "; bounded dry pass-through is unavailable until a valid prepare",
+                                false);
+        return false;
+    }
 
     // Single atomic copies for the lock-free audio callback; one store per
     // field cannot tear, so no multi-field snapshot protocol is needed there.
@@ -441,14 +455,16 @@ bool RaveAudioEngine::commitResult(const float* const samples,
     }
     const auto deadline = frame * inferenceQuantumSamples + transportLatencySamples - fadeSamples;
     const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
-    if (sampleClock > deadline || committedFrameTags[slot] == frame)
-    {
-        lateResults.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
+    // Duplicate identity takes precedence over arrival time, including after
+    // commitment. A first publication after its deadline remains late.
     if (wetFrameTags[slot] == frame)
     {
         alignmentErrors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (sampleClock > deadline || committedFrameTags[slot] == frame)
+    {
+        lateResults.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     std::copy_n(samples, inferenceQuantumSamples,

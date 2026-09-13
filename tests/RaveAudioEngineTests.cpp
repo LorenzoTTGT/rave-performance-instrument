@@ -78,6 +78,27 @@ public:
     }
 };
 
+class ControlledBackend final : public rave::ModelBackend
+{
+public:
+    void prepare(double, std::size_t) override {}
+    bool load(const std::string&, std::string&) override { return true; }
+    bool reset(std::string&) override { release.store(false); completed.store(false); return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+    bool process(std::span<const float> input, std::span<const float>, std::span<float> output) override
+    {
+        entered.store(true, std::memory_order_release);
+        while (!release.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        for (std::size_t i = 0; i < input.size(); ++i) output[i] = input[i] * 2.0f;
+        completed.store(true, std::memory_order_release);
+        completedCount.fetch_add(1, std::memory_order_release);
+        return true;
+    }
+    std::atomic<bool> entered { false }, release { false }, completed { false };
+    std::atomic<int> completedCount { 0 };
+};
+
 class LatentGainBackend final : public rave::ModelBackend
 {
 public:
@@ -411,8 +432,14 @@ void testDeterministicResultValidationAndFade()
             "dry-to-wet availability starts at zero and rises over exactly 5 ms");
 
     engine.processAudio(inputs, 1, outputs, 1, 2046);
-    require(!engine.publishResultForTesting(wet.data(), wet.size(), 0), "late result rejected");
-    require(engine.runtimeTelemetry().lateResults == 1, "late result counted precisely");
+    require(!engine.publishResultForTesting(wet.data(), wet.size(), 0),
+            "post-commit duplicate rejected as an alignment error");
+    require(engine.runtimeTelemetry().alignmentErrors == 4
+                && engine.runtimeTelemetry().lateResults == 0,
+            "duplicate precedence remains alignment after commitment");
+    require(!engine.publishResultForTesting(wet.data(), wet.size(), 1),
+            "ordinary first result after its deadline is rejected");
+    require(engine.runtimeTelemetry().lateResults == 1, "first late result counted precisely");
 }
 
 void testExactDeadlineAndReleaseInvalidation()
@@ -462,6 +489,97 @@ void testExactDeadlineAndReleaseInvalidation()
     exact.processAudio(oneInputs, 1, oneOutputs, 1, 1);
     require(oneOutput == 0.0f && !exact.runtimeTelemetry().transportReady,
             "release invalidates readiness and prevents stale timeline rendering");
+}
+
+void testPrepareValidationAndTelemetryEpochReset()
+{
+    const auto verifyInvalid = [](const double rate) {
+        rave::RaveAudioEngine engine;
+        engine.prepare(rate, 64, 1);
+        require(!engine.runtimeTelemetry().transportReady, "invalid rate leaves runtime unprepared");
+        require(!engine.lifecycleDiagnostic().empty(), "invalid rate has truthful lifecycle diagnostic");
+    };
+    verifyInvalid(0.0);
+    verifyInvalid(-1.0);
+    verifyInvalid(std::numeric_limits<double>::infinity());
+    verifyInvalid(std::numeric_limits<double>::quiet_NaN());
+    verifyInvalid(409600.1);
+
+    rave::RaveAudioEngine boundary;
+    boundary.prepare(409600.0, 64, 1);
+    std::vector<float> frame(2048);
+    require(!boundary.publishResultForTesting(frame.data(), 1, 7), "invalid publication creates telemetry");
+    require(boundary.runtimeTelemetry().alignmentErrors == 1, "precondition telemetry set");
+    boundary.prepare(48000.0, 64, 1);
+    const auto reset = boundary.runtimeTelemetry();
+    require(reset.alignmentErrors == 0 && reset.lateResults == 0 && reset.queueDrops == 0
+                && reset.processingErrors == 0 && reset.resetErrors == 0
+                && reset.deadlineMisses == 0,
+            "no-model prepare resets every runtime telemetry counter");
+
+    auto incompatible = std::make_shared<FixedRateBackend>(48000);
+    boundary.setModelBackend(incompatible);
+    boundary.prepare(48000.0, 64, 1);
+    require(!boundary.publishResultForTesting(frame.data(), 1, 7), "telemetry dirtied before reprepare");
+    boundary.prepare(44100.0, 64, 1);
+    const auto incompatibleReset = boundary.runtimeTelemetry();
+    require(incompatibleReset.alignmentErrors == 0 && incompatibleReset.queueDrops == 0
+                && incompatibleReset.processingErrors == 0 && incompatibleReset.resetErrors == 0,
+            "incompatible reprepare resets worker and engine telemetry");
+}
+
+void testControlledWorkerDeadlineIntegration()
+{
+    auto backend = std::make_shared<ControlledBackend>();
+    rave::RaveAudioEngine engine;
+    engine.setModelBackend(backend);
+    engine.prepare(48000.0, 2048, 1);
+    engine.setDryWet(1.0f);
+    std::vector<float> input(2048, 1.0f), output(2048);
+    const float* inputs[] { input.data() }; float* outputs[] { output.data() };
+    engine.processAudio(inputs, 1, outputs, 1, 2048);
+    while (!backend->entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    backend->release.store(true, std::memory_order_release);
+    while (!backend->completed.load(std::memory_order_acquire)) std::this_thread::yield();
+    engine.processAudio(inputs, 1, outputs, 1, 1808); // reaches D(0)
+    engine.processAudio(inputs, 1, outputs, 1, 240);  // commit then reaches P(0)
+    engine.processAudio(inputs, 1, outputs, 1, 512);
+    require(output[500] > 1.9f, "real worker queue result commits and renders wet on time");
+    engine.release();
+
+    auto lateBackend = std::make_shared<ControlledBackend>();
+    rave::RaveAudioEngine late; late.setModelBackend(lateBackend); late.prepare(48000.0, 2048, 1);
+    late.processAudio(inputs, 1, outputs, 1, 2048);
+    while (!lateBackend->entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    late.processAudio(inputs, 1, outputs, 1, 1809); // commits dry and passes D(0)
+    lateBackend->release.store(true, std::memory_order_release);
+    while (!lateBackend->completed.load(std::memory_order_acquire)) std::this_thread::yield();
+    late.processAudio(inputs, 1, outputs, 1, 2048); // D(1) drains stale frame zero
+    require(late.runtimeTelemetry().lateResults == 1, "late real-worker result is permanently rejected");
+    late.release();
+
+    auto overloadedBackend = std::make_shared<ControlledBackend>();
+    rave::RaveAudioEngine overloaded;
+    overloaded.setModelBackend(overloadedBackend);
+    overloaded.prepare(48000.0, 2048, 1);
+    overloaded.setDryWet(1.0f);
+    overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+    while (!overloadedBackend->entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    for (int frame = 0; frame < 5; ++frame)
+        overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+    require(overloaded.runtimeTelemetry().queueDrops > 0,
+            "controlled worker saturation is reported without shifting the timeline");
+    overloadedBackend->release.store(true, std::memory_order_release);
+    while (overloadedBackend->completedCount.load(std::memory_order_acquire) < 2)
+        std::this_thread::yield();
+    const auto completedBeforeRecovery = overloadedBackend->completedCount.load(std::memory_order_acquire);
+    overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+    while (overloadedBackend->completedCount.load(std::memory_order_acquire) <= completedBeforeRecovery)
+        std::this_thread::yield();
+    overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+    require(overloaded.runtimeTelemetry().deadlineMisses > 0,
+            "overload commits aligned dry misses permanently before recovery");
+    overloaded.release();
 }
 
 void testRuntimeConfigurationReporting()
@@ -1273,6 +1391,8 @@ int main()
     testProcessedAudioUsesMatchingDelayedDryBlock();
     testDeterministicResultValidationAndFade();
     testExactDeadlineAndReleaseInvalidation();
+    testPrepareValidationAndTelemetryEpochReset();
+    testControlledWorkerDeadlineIntegration();
     testRuntimeConfigurationReporting();
     testActivationRechecksCurrentConfiguration();
     testFailedActivationPreservesPreviousBackend();

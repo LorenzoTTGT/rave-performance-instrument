@@ -23,8 +23,11 @@ Runtime counters reset on prepare. Deadline misses count eligible frames absent
 at their pre-playback commitment deadline; queue drops combine worker input/output enqueue failures;
 late results arrived after their boundary; processing/reset errors count
 backend failures; alignment errors count malformed, duplicate, impossible
-future results, and invalid layouts. Lifecycle status separately remains the
-authoritative model-usability state.
+future results, and invalid layouts; duplicate identity takes precedence even
+after commitment, while a first post-deadline result is late. Each prepare
+starts a fresh counter epoch. Rates must be finite and positive, with a 5 ms
+fade no longer than the 2048-sample quantum. Lifecycle status separately
+remains the authoritative model-usability state.
 
 Reference projects:
 
