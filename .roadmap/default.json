@@ -2,8 +2,8 @@
   "format": "agent-profile-roadmap-v2",
   "roadmapId": "default",
   "state": {
-    "version": 2,
-    "revision": 10,
+    "version": 3,
+    "revision": 16,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -66,7 +66,27 @@
         },
         "generation": 1,
         "work": "implemented",
-        "receipts": {}
+        "receipts": {
+          "verified": {
+            "generation": 1,
+            "commit": "2463d999ec57df16c9c794c41ce1ae897a06217c",
+            "evidence": "Independent Sol-high final review PASS on the complete baseline-to-candidate patch after all lifecycle findings were corrected. Canonical checkout: LibTorch build/test passed 7/7; SHA-256-verified birds_pluma real-model smoke passed at 48 kHz/2048; fresh Debug no-LibTorch build/test passed 5/5; VST3 and AU strict codesign verification passed. Stable parameter IDs unchanged.",
+            "recordedAt": "2026-09-13T03:21:12.482Z"
+          },
+          "committed": {
+            "generation": 1,
+            "commit": "2463d999ec57df16c9c794c41ce1ae897a06217c",
+            "evidence": "Reviewed RAVE-02 implementation and roadmap snapshot are committed through 2463d999ec57df16c9c794c41ce1ae897a06217c; canonical worktree was clean at commit creation except roadmap ledger refreshes generated afterward.",
+            "recordedAt": "2026-09-13T03:21:18.298Z"
+          },
+          "pushed": {
+            "generation": 1,
+            "commit": "2463d999ec57df16c9c794c41ce1ae897a06217c",
+            "evidence": "git push origin main succeeded and git ls-remote verified origin/main exactly 2463d999ec57df16c9c794c41ce1ae897a06217c.",
+            "recordedAt": "2026-09-13T03:21:33.415Z",
+            "reference": "origin/main"
+          }
+        }
       },
       {
         "id": "rave-03-timing-latency",
@@ -94,8 +114,16 @@
           "branch": "main"
         },
         "generation": 1,
-        "work": "todo",
-        "receipts": {}
+        "work": "implemented",
+        "receipts": {},
+        "ownership": {
+          "owner": "pi-root",
+          "branch": "main",
+          "worktree": "canonical",
+          "status": "claimed",
+          "claimedAt": "2026-09-13T03:23:10.218Z",
+          "updatedAt": "2026-09-13T03:23:10.218Z"
+        }
       },
       {
         "id": "rave-04-controls-recall",
@@ -179,13 +207,14 @@
         "receipts": {}
       }
     ],
-    "updatedAt": "2026-09-13T03:20:50.981Z",
+    "updatedAt": "2026-09-13T11:59:24.453Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "07d745b5ac4366294cb4cb5e7129e59a90c1818b7b8557acd0e4ad2f4481f720",
     "80f5d91eb99f45c00e3a84cd1aaf361cf75083effbdad7293282d966d846477f",
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "07d745b5ac4366294cb4cb5e7129e59a90c1818b7b8557acd0e4ad2f4481f720"
+  "hash": "d03d255c35990dad46ad0adceafe1692ff3547011a4c978d68e7708d29dbdfec"
 }

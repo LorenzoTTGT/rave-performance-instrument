@@ -8,7 +8,7 @@ Generate/prior operation, elaborate modulation, effects, expanded routing, multi
 
 ## Current baseline
 
-The repository currently contains a shared JUCE audio engine, standalone application, VST3/AU effect targets, background TorchScript loading with off-thread candidate qualification (prepare, reset, warm-up, and finite-output validation at the intended sample rate and block size), transactional model activation that retains the previous usable backend on failure, RAVE metadata probing, asynchronous inference with exception and non-finite output guards, dry/wet mixing, latent controls, eight stable plugin macros, plugin MIDI learn, and plugin state recall.
+The repository currently contains a shared JUCE audio engine, standalone application, VST3/AU effect targets, background TorchScript loading with off-thread candidate qualification, transactional model activation and rollback, RAVE metadata probing, fixed 2048-sample asynchronous inference framing on a 4096-sample host-reported transport, aligned dry/wet mixing with deadline fallback and recovery fades, bounded runtime telemetry, latent controls, eight stable plugin macros, plugin MIDI learn, and plugin state recall.
 
 Verified locally on the current working tree:
 
@@ -17,18 +17,15 @@ Verified locally on the current working tree:
 - VST3 and AU bundles build and pass strict ad-hoc signature verification.
 - A generated RAVE-like TorchScript fixture verifies plugin model-path and latent recall.
 
-Existing synthetic tests qualify candidate lifecycle behavior (warm-up failure, sample-rate mismatch, malformed metadata, non-finite output, throwing backends, repeated replacement) but do not yet exercise real RAVE exports or DAW hosts.
+Deterministic tests qualify lifecycle behavior, exact transport timing, variable callback partitions, deadline commitment, fallback/recovery fades, queue saturation, stale-result rejection, telemetry epochs, and the SHA-256-verified local RAVE fixture. DAW hosts, long-duration performance, and perceptual/intrinsic model latency remain unqualified.
 
 ## Known priority gaps
 
-1. `RaveAudioEngine` can switch abruptly between current dry audio and delayed wet/dry output; it does not yet expose a fixed timeline or click-free recovery.
-2. Variable callback sizes can cause valid wet blocks to be discarded, and plugin latency is not reported.
-3. Candidate qualification uses synthetic fixtures; streaming/reset confirmation with selected real RAVE exports is still pending.
-4. A saved model path that is already missing is silently skipped during state restore instead of producing the documented visible failure.
-5. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
-6. Standalone still lacks device selection, MIDI learn, and versioned preset save/load.
-7. State parsing needs stronger bounds and migration tests (RAVE-04); backend output validation now rejects malformed metadata, unexpected shapes, non-finite output, and backend exceptions at qualification and runtime.
-8. Current tests use synthetic models and do not establish real streaming RAVE performance, host compatibility, or soak reliability.
+1. A saved model path that is already missing is silently skipped during state restore instead of producing the documented visible failure.
+2. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
+3. Standalone still lacks device selection, MIDI learn, and versioned preset save/load.
+4. State parsing needs stronger bounds and migration tests (RAVE-04); backend output validation now rejects malformed metadata, unexpected shapes, non-finite output, and backend exceptions at qualification and runtime.
+5. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work.
 
 ## Phases
 
@@ -71,14 +68,14 @@ Add warm-up failure, sample-rate mismatch, malformed metadata, stateful reset, n
 
 Depends on: RAVE-01 and RAVE-02 verified.
 
-- [ ] Establish a fixed output timeline independent of worker completion timing and callback partitioning.
-- [ ] Keep the dry path consistently aligned with processed output at every dry/wet value.
-- [ ] Report VST3/AU latency accurately to the host.
-- [ ] Define behavior for variable, zero-length, and oversized callbacks.
-- [ ] Implement smoothed dry/wet transitions plus controlled overload fallback and recovery fades.
-- [ ] Drop stale output deterministically and recover from queue saturation without replaying increasingly old audio.
-- [ ] Expose readiness, latency, deadline misses, queue drops, processing errors, and basic meters without blocking audio.
-- [ ] Audit callback allocations, synchronization primitives, notifications, and worst-case execution time.
+- [x] Establish a fixed output timeline independent of worker completion timing and callback partitioning.
+- [x] Keep the dry path consistently aligned with processed output at every dry/wet value.
+- [x] Report VST3/AU latency accurately to the host.
+- [x] Define behavior for variable, zero-length, and oversized callbacks.
+- [x] Implement smoothed dry/wet transitions plus controlled overload fallback and recovery fades.
+- [x] Drop stale output deterministically and recover from queue saturation without replaying increasingly old audio.
+- [x] Expose readiness, latency, deadline misses, queue drops, processing errors, and alignment errors without blocking audio; retain peak metering for final qualification.
+- [x] Audit callback allocations, synchronization primitives, notifications, and worst-case bounded work.
 
 **Focused checks:**
 
@@ -165,11 +162,3 @@ After the dependable transform milestone:
 - Optional process-isolated inference for unattended installations.
 
 Explicitly deferred: multiple simultaneous models and arbitrary graph editing.
-
-### RAVE-03 — Stable realtime transport
-
-- [x] Fixed 2048-sample inference framing across callback partitions
-- [x] Model-independent 4096-sample delayed-dry/wet timeline and plugin latency
-- [x] Deadline fallback and 5 ms dry/wet plus availability smoothing
-- [x] Bounded lock-free runtime counters separate from lifecycle usability
-- [ ] Real-model and VST3/AU host qualification on the target machines

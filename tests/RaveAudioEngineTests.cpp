@@ -607,25 +607,62 @@ void testControlledWorkerDeadlineIntegration()
         return overloadedBackend->completedCount.load(std::memory_order_acquire) == 5;
     }, "exactly five pre-recovery backend frames complete");
 
+    const auto requireFrameValue = [](const std::vector<float>& samples,
+                                      const float expected,
+                                      const char* const message) {
+        for (const auto sample : samples)
+            require(std::abs(sample - expected) < 0.0001f, message);
+    };
+    const auto requireValueAbsent = [](const std::vector<float>& samples,
+                                       const float forbidden,
+                                       const char* const message) {
+        for (const auto sample : samples)
+            require(std::abs(sample - forbidden) >= 0.0001f, message);
+    };
+
     const auto preRecoveryCompletions = overloadedBackend->completedCount.load(std::memory_order_acquire);
     processFrame(99.0f); // frame 6; D(5) drains and frees the output queue first
-    require(std::abs(distinctOutput[500] - 14.0f) < 0.0001f,
-            "complete missed frame 4 renders its exact delayed dry value");
+    requireFrameValue(distinctOutput, 14.0f,
+                      "every sample of missed frame 4 is exact aligned delayed dry");
+    requireValueAbsent(distinctOutput, 198.0f,
+                       "recovery wet value is absent from missed frame 4");
     requireEventually([&] {
         return overloadedBackend->completedCount.load(std::memory_order_acquire)
             == preRecoveryCompletions + 1;
     }, "unique recovery frame completes after output queue space is freed");
 
     std::fill(distinctInput.begin(), distinctInput.end(), 100.0f);
+    std::vector<float> frame5Output(2048);
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 1808);
-    require(std::abs(distinctOutput[500] - 15.0f) < 0.0001f,
-            "missed frame 5 starts with its exact delayed dry value");
+    std::copy_n(distinctOutput.begin(), 1808, frame5Output.begin());
+    const auto beforeContinuation = overloadedBackend->completedCount.load(std::memory_order_acquire);
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 240);
-    require(std::abs(distinctOutput[239] - 15.0f) < 0.0001f,
-            "complete missed frame 5 remains exact delayed dry through playback end");
+    std::copy_n(distinctOutput.begin(), 240, frame5Output.begin() + 1808);
+    requireFrameValue(frame5Output, 15.0f,
+                      "every sample of missed frame 5 is exact aligned delayed dry");
+    requireValueAbsent(frame5Output, 198.0f,
+                       "recovery wet value is absent from missed frame 5");
+
+    std::vector<float> frame6Output(2048);
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 512);
-    require(std::abs(distinctOutput[240] - 198.0f) < 0.0001f,
-            "unique recovered wet value reaches unity only in frame 6 at P(6)+F");
+    std::copy_n(distinctOutput.begin(), 512, frame6Output.begin());
+    requireEventually([&] {
+        return overloadedBackend->completedCount.load(std::memory_order_acquire)
+            == beforeContinuation + 1;
+    }, "following frame completes before frame 6 reaches its pre-fade deadline");
+    overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 1536);
+    std::copy_n(distinctOutput.begin(), 1536, frame6Output.begin() + 512);
+    constexpr std::size_t fadeLength = 240;
+    for (std::size_t sample = 0; sample < fadeLength; ++sample)
+    {
+        const auto expected = 99.0f + 99.0f * static_cast<float>(sample)
+            / static_cast<float>(fadeLength);
+        require(std::abs(frame6Output[sample] - expected) < 0.0001f,
+                "recovery frame follows the exact 5 ms dry-to-wet ramp");
+    }
+    for (std::size_t sample = fadeLength; sample < frame6Output.size(); ++sample)
+        require(std::abs(frame6Output[sample] - 198.0f) < 0.0001f,
+                "recovery frame remains exact wet after the fade");
     require(overloaded.runtimeTelemetry().deadlineMisses >= 6,
             "saturated and stale frames commit as deadline misses without replay");
     overloaded.release();
