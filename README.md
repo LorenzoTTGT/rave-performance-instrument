@@ -6,6 +6,8 @@ Build a native RAVE performance instrument in C++ with JUCE, using LibTorch init
 
 The instrument should let a performer load a model, route audio through it, explore its latent space, assign modulation and MIDI, and save the complete setup.
 
+RAVE-04 core state support uses bounded version-2 plug-in state (1 MiB, 4096 latents), host-authoritative macro controls, missing-model relink state, and a reusable nonvisual standalone preset/MIDI/device-identity controller. Visual standalone integration remains pending.
+
 ### Fixed realtime transport
 
 Audio is accumulated into 2048-sample inference frames and rendered on a

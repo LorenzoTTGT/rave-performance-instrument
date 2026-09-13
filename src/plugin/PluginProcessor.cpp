@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstring>
 #include <memory>
+#include <cmath>
 
 namespace
 {
@@ -167,7 +168,7 @@ juce::AudioProcessorEditor* RavePluginProcessor::createEditor()
 void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData)
 {
     juce::XmlElement state("RavePluginState");
-    state.setAttribute("version", 1);
+    state.setAttribute("version", stateSchemaVersion);
     state.setAttribute("dryWet", dryWetParameter != nullptr ? dryWetParameter->get() : 0.0f);
     for (std::size_t index = 0; index < macroCount; ++index)
     {
@@ -179,22 +180,30 @@ void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData
 
     {
         const juce::ScopedLock lock(modelStateLock);
-        if (activeModelFile != juce::File {})
-            state.setAttribute("modelPath", activeModelFile.getFullPathName());
+        const auto savedModel = relinkRequired ? requestedMissingModelFile : activeModelFile;
+        if (savedModel != juce::File {})
+            state.setAttribute("modelPath", savedModel.getFullPathName());
+        state.setAttribute("relinkRequired", relinkRequired);
     }
 
     auto* const latents = state.createNewChildElement("Latents");
-    const auto latentCount = engine.latentDimensionCount();
-    latents->setAttribute("count", static_cast<int>(latentCount));
-    for (std::size_t index = 0; index < latentCount; ++index)
-        latents->setAttribute("v" + juce::String(index + 1), engine.latentControl(index));
+    const auto latentCount = relinkRequired ? retainedMissingLatents.size() : engine.latentDimensionCount();
+    const auto dynamicCount = latentCount > macroCount ? latentCount - macroCount : 0;
+    latents->setAttribute("count", static_cast<int>(dynamicCount));
+    latents->setAttribute("firstIndex", static_cast<int>(macroCount));
+    for (std::size_t index = macroCount; index < latentCount; ++index)
+        latents->setAttribute("v" + juce::String(index), relinkRequired ? retainedMissingLatents[index] : engine.latentControl(index));
 
-    copyXmlToBinary(state, destinationData);
+    juce::MemoryBlock candidate;
+    copyXmlToBinary(state, candidate);
+    if (candidate.getSize() <= maximumStateBytes)
+        destinationData = candidate;
 }
 
 void RavePluginProcessor::setStateInformation(const void* const data, const int sizeInBytes)
 {
-    if (data == nullptr || dryWetParameter == nullptr)
+    if (data == nullptr || dryWetParameter == nullptr || sizeInBytes <= 0
+        || static_cast<std::size_t>(sizeInBytes) > maximumStateBytes)
         return;
 
     // Preserve compatibility with the initial float-only state format.
@@ -202,59 +211,83 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     {
         float value = 0.0f;
         std::memcpy(&value, data, sizeof(value));
-        dryWetParameter->setValueNotifyingHost(
-            dryWetParameter->convertTo0to1(juce::jlimit(0.0f, 1.0f, value)));
+        if (std::isfinite(value))
+            dryWetParameter->setValueNotifyingHost(
+                dryWetParameter->convertTo0to1(juce::jlimit(0.0f, 1.0f, value)));
         return;
     }
 
     const auto state = getXmlFromBinary(data, sizeInBytes);
     if (state == nullptr || !state->hasTagName("RavePluginState"))
         return;
+    const auto version = state->getIntAttribute("version", 1);
+    if (version < 1 || version > stateSchemaVersion)
+        return;
+    const auto finiteAttribute = [](const juce::XmlElement& element, const juce::String& name,
+                                    double fallback) { const auto value = element.getDoubleAttribute(name, fallback); return std::isfinite(value); };
+    if (!finiteAttribute(*state, "dryWet", 0.0)) return;
+    for (std::size_t i=0;i<macroCount;++i)
+        if (!finiteAttribute(*state, "macro"+juce::String(i+1), 0.0)) return;
+
+    const auto restoredDryWet = juce::jlimit(
+        0.0f, 1.0f, static_cast<float>(state->getDoubleAttribute("dryWet", 0.0)));
+    std::array<float, macroCount> restoredMacros {};
+    std::array<int, midiTargetCount> restoredMidi {};
+    restoredMidi[0] = juce::jlimit(-1, 127, state->getIntAttribute("midiCcDryWet", -1));
+    for (std::size_t index = 0; index < macroCount; ++index)
+    {
+        const auto suffix = juce::String(index + 1);
+        restoredMacros[index] = juce::jlimit(
+            -4.0f, 4.0f,
+            static_cast<float>(state->getDoubleAttribute("macro" + suffix, 0.0)));
+        restoredMidi[index + 1] = juce::jlimit(
+            -1, 127, state->getIntAttribute("midiCc" + suffix, -1));
+    }
+
+    std::vector<float> restoredLatents(restoredMacros.begin(), restoredMacros.end());
+    if (const auto* const latents = state->getChildByName("Latents"))
+    {
+        const auto count = latents->getIntAttribute("count", 0);
+        const auto first = version >= 2 ? latents->getIntAttribute("firstIndex", int(macroCount)) : 0;
+        if (count < 0 || first < 0 || static_cast<std::size_t>(count) > maximumLatentCount
+            || static_cast<std::size_t>(first) + static_cast<std::size_t>(count) > maximumLatentCount) return;
+        restoredLatents.resize(std::max(restoredLatents.size(), static_cast<std::size_t>(first + count)), 0.0f);
+        for (int index = 0; index < count; ++index)
+        {
+            const auto key = version >= 2 ? "v" + juce::String(first + index) : "v" + juce::String(index + 1);
+            const auto value = latents->getDoubleAttribute(key, 0.0);
+            if (!std::isfinite(value)) return;
+            if (version == 1 && index < int(macroCount)) continue; // host macros are authoritative
+            restoredLatents[static_cast<std::size_t>(first + index)] = juce::jlimit(-4.0f, 4.0f, static_cast<float>(value));
+        }
+    }
+
+    const auto restoredModelPath = state->getStringAttribute("modelPath");
+    if (restoredModelPath.length() > 4096)
+        return;
 
     const auto restoreParameter = [](juce::AudioParameterFloat& parameter, const float value) {
         parameter.setValueNotifyingHost(parameter.convertTo0to1(value));
     };
-    restoreParameter(*dryWetParameter,
-                     juce::jlimit(0.0f, 1.0f,
-                                  static_cast<float>(state->getDoubleAttribute("dryWet", 0.0))));
-    midiControllers[0].store(juce::jlimit(-1, 127,
-                                          state->getIntAttribute("midiCcDryWet", -1)),
-                             std::memory_order_relaxed);
+    restoreParameter(*dryWetParameter, restoredDryWet);
+    midiControllers[0].store(restoredMidi[0], std::memory_order_relaxed);
     for (std::size_t index = 0; index < macroCount; ++index)
     {
-        const auto suffix = juce::String(index + 1);
-        restoreParameter(*macroParameters[index],
-                         juce::jlimit(-4.0f, 4.0f,
-                                      static_cast<float>(state->getDoubleAttribute("macro" + suffix, 0.0))));
-        midiControllers[index + 1].store(
-            juce::jlimit(-1, 127, state->getIntAttribute("midiCc" + suffix, -1)),
-            std::memory_order_relaxed);
+        restoreParameter(*macroParameters[index], restoredMacros[index]);
+        midiControllers[index + 1].store(restoredMidi[index + 1], std::memory_order_relaxed);
     }
 
-    std::vector<float> restoredLatents;
-    if (const auto* const latents = state->getChildByName("Latents"))
-    {
-        const auto count = std::max(0, latents->getIntAttribute("count", 0));
-        restoredLatents.resize(static_cast<std::size_t>(count));
-        for (int index = 0; index < count; ++index)
-        {
-            restoredLatents[static_cast<std::size_t>(index)] = juce::jlimit(
-                -4.0f,
-                4.0f,
-                static_cast<float>(latents->getDoubleAttribute(
-                    "v" + juce::String(index + 1), 0.0)));
-        }
-    }
-
-    const juce::File restoredModel(state->getStringAttribute("modelPath"));
+    const juce::File restoredModel(restoredModelPath);
+    requestGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (restoredModel.existsAsFile())
+        static_cast<void>(queueModelRequest(restoredModel, std::move(restoredLatents), false));
+    else if (restoredModel != juce::File {})
     {
         const juce::ScopedLock lock(modelStateLock);
-        queuedRestoreModelFile = restoredModel;
-        queuedRestoreLatents = std::move(restoredLatents);
-        hasQueuedModelRestore.store(true, std::memory_order_release);
-        currentModelStatus = "Restoring " + restoredModel.getFileName() + utf8("…");
-        currentStatusNeedsLifecycle = false;
+        requestedMissingModelFile = restoredModel; retainedMissingLatents = std::move(restoredLatents);
+        relinkRequired = true; hasQueuedModelRestore.store(false, std::memory_order_release);
+        currentModelStatus = "Saved model is missing; relink required: " + restoredModel.getFileName();
+        currentStatusNeedsLifecycle = false; currentModelRevision.fetch_add(1, std::memory_order_release);
     }
 
     if (const auto* const messageManager = juce::MessageManager::getInstanceWithoutCreating();
@@ -295,6 +328,25 @@ bool RavePluginProcessor::isLearningMidiTarget(const std::size_t targetIndex) co
 
 bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
 {
+    requestGeneration.fetch_add(1, std::memory_order_acq_rel);
+    return queueModelRequest(modelFile, {}, false);
+}
+
+bool RavePluginProcessor::relinkMissingModel(const juce::File& modelFile)
+{
+    std::vector<float> values;
+    { const juce::ScopedLock lock(modelStateLock); if (!relinkRequired) return false; values = retainedMissingLatents; }
+    requestGeneration.fetch_add(1, std::memory_order_acq_rel);
+    return queueModelRequest(modelFile, std::move(values), true);
+}
+
+bool RavePluginProcessor::isRelinkRequired() const noexcept
+{ const juce::ScopedLock lock(modelStateLock); return relinkRequired; }
+juce::String RavePluginProcessor::requestedModelPath() const
+{ const juce::ScopedLock lock(modelStateLock); return requestedMissingModelFile.getFullPathName(); }
+
+bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile, std::vector<float> values, bool)
+{
 #if RAVE_HAS_LIBTORCH
     // Never qualify a candidate against invented defaults: defer until a real
     // host/device configuration exists.
@@ -307,18 +359,28 @@ bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
         return false;
     }
 
-    if (!modelFile.existsAsFile() || modelLoader == nullptr
-        || !modelLoader->start(modelFile.getFullPathName().toStdString(), configuration))
+    if (!modelFile.existsAsFile() || modelLoader == nullptr)
         return false;
+    const auto generation = requestGeneration.load(std::memory_order_acquire);
+    if (modelLoader->state() == rave::BackgroundModelLoader::State::loading)
+    {
+        const juce::ScopedLock lock(modelStateLock);
+        queuedRestoreModelFile=modelFile; queuedRestoreLatents=std::move(values); queuedGeneration=generation;
+        hasQueuedModelRestore.store(true, std::memory_order_release);
+        currentModelStatus="Queued " + modelFile.getFileName() + utf8("…"); currentStatusNeedsLifecycle=false;
+        return true;
+    }
+    if (!modelLoader->start(modelFile.getFullPathName().toStdString(), configuration)) return false;
 
     const juce::ScopedLock lock(modelStateLock);
     pendingModelFile = modelFile;
-    pendingLatentRestore.clear();
+    pendingLatentRestore = std::move(values);
+    pendingGeneration = generation;
     currentModelStatus = "Loading " + modelFile.getFileName() + utf8("…");
     currentStatusNeedsLifecycle = false;
     return true;
 #else
-    static_cast<void>(modelFile);
+    static_cast<void>(modelFile); static_cast<void>(values);
     const juce::ScopedLock lock(modelStateLock);
     currentModelStatus = "LibTorch backend unavailable";
     currentStatusNeedsLifecycle = false;
@@ -340,12 +402,16 @@ bool RavePluginProcessor::finishModelLoadIfReady()
     auto result = modelLoader->takeResult();
     juce::File loadedFile;
     std::vector<float> restoredLatents;
+    std::uint64_t generation = 0;
     {
         const juce::ScopedLock lock(modelStateLock);
         loadedFile = pendingModelFile;
         restoredLatents = std::move(pendingLatentRestore);
         pendingModelFile = juce::File {};
+        generation = pendingGeneration;
     }
+    if (generation != requestGeneration.load(std::memory_order_acquire))
+        return true;
 
     if (result.state == rave::BackgroundModelLoader::State::failed)
     {
@@ -355,7 +421,7 @@ bool RavePluginProcessor::finishModelLoadIfReady()
         return true;
     }
 
-    activateModel(std::move(result.backend), loadedFile, restoredLatents);
+    activateModel(std::move(result.backend), loadedFile, restoredLatents, generation);
     return true;
 #else
     return false;
@@ -456,6 +522,7 @@ void RavePluginProcessor::timerCallback()
         const juce::ScopedLock lock(modelStateLock);
         pendingModelFile = modelFile;
         pendingLatentRestore = std::move(restoredLatents);
+        pendingGeneration = queuedGeneration;
         queuedRestoreModelFile = juce::File {};
         queuedRestoreLatents.clear();
         hasQueuedModelRestore.store(false, std::memory_order_release);
@@ -494,10 +561,14 @@ void RavePluginProcessor::applyMidi(juce::MidiBuffer& midiMessages) noexcept
 
 void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
                                         const juce::File& modelFile,
-                                        const std::vector<float>& restoredLatents)
+                                        const std::vector<float>& restoredLatents,
+                                        const std::uint64_t generation)
 {
+    if (generation != requestGeneration.load(std::memory_order_acquire)) return;
     bool activated = false;
     std::string activationFailure;
+    std::vector<float> prior(engine.latentDimensionCount());
+    for (std::size_t i=0;i<prior.size();++i) prior[i]=engine.latentControl(i);
 
     suspendProcessing(true);
     {
@@ -507,9 +578,12 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
             activated = engine.activateModelBackend(std::move(backend), &activationFailure);
             if (activated)
             {
-                const auto restoreCount = std::min(restoredLatents.size(), engine.latentDimensionCount());
+                const auto& values = restoredLatents.empty() ? prior : restoredLatents;
+                const auto restoreCount = std::min(values.size(), engine.latentDimensionCount());
                 for (std::size_t index = 0; index < restoreCount; ++index)
-                    static_cast<void>(engine.setLatentControl(index, restoredLatents[index]));
+                    static_cast<void>(engine.setLatentControl(index, values[index]));
+                for (std::size_t index=0; index<std::min(macroCount,engine.latentDimensionCount()); ++index)
+                    static_cast<void>(engine.setLatentControl(index, macroParameters[index]->get()));
             }
         }
         catch (const std::exception& exception)
@@ -533,6 +607,7 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
     if (activated)
     {
         activeModelFile = modelFile;
+        relinkRequired = false; requestedMissingModelFile = juce::File {}; retainedMissingLatents.clear();
         currentModelStatus.clear();
         currentStatusNeedsLifecycle = false;
     }

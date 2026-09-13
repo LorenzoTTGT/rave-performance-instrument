@@ -94,9 +94,9 @@ Depends on: RAVE-02 verified. Final audio acceptance also depends on RAVE-03.
 - [ ] Define macro authority over latent dimensions 1–8 and remove duplicate/ambiguous serialized sources.
 - [ ] Bound serialized latent counts and validate state versions; retain tested migration from the initial float-only plugin state.
 - [ ] Add explicit model relinking when a saved same-machine path is unavailable.
-- [ ] Add standalone MIDI input selection, learn, clear/reassign behavior, and saved mappings.
-- [ ] Add versioned standalone preset save/load for model identity, every latent value, dry/wet, and MIDI assignments.
-- [ ] Add standalone audio-device/input selection sufficient for reproducible performance.
+- [x] Add nonvisual standalone MIDI input identity and learn, clear/reassign behavior with saved mappings (UI/device-manager wiring remains).
+- [x] Add bounded versioned standalone preset state for model identity, every latent value, dry/wet, and MIDI assignments.
+- [x] Add standalone audio-device/input setup identity APIs (actual AudioDeviceManager mutation remains UI integration).
 - [ ] Test recall with more than eight latent dimensions and process audio after restoration.
 
 **Focused checks:**

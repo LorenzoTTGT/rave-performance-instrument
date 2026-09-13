@@ -64,6 +64,62 @@ juce::RangedAudioParameter* findParameter(juce::AudioProcessor& processor,
     return nullptr;
 }
 
+juce::MemoryBlock xmlState(juce::XmlElement& xml)
+{
+    juce::MemoryBlock result;
+    juce::AudioProcessor::copyXmlToBinary(xml, result);
+    return result;
+}
+
+void testStateSchemaMigrationsBoundsAndMacroAuthority()
+{
+    RavePluginProcessor processor;
+    float legacy = 0.42f;
+    processor.setStateInformation(&legacy, sizeof(legacy));
+    require(std::abs(processor.dryWetParameterReference().convertFrom0to1(
+        processor.dryWetParameterReference().getValue()) - legacy) < 0.001f, "float state migrates");
+
+    juce::XmlElement v1("RavePluginState"); v1.setAttribute("version",1); v1.setAttribute("dryWet",.6);
+    v1.setAttribute("macro1",2.0); auto* old=v1.createNewChildElement("Latents"); old->setAttribute("count",12);
+    for(int i=0;i<12;++i) old->setAttribute("v"+juce::String(i+1),-3.0+i*.25);
+    auto block=xmlState(v1); processor.setStateInformation(block.getData(),int(block.getSize()));
+    require(std::abs(processor.macroParameterReference(0).convertFrom0to1(processor.macroParameterReference(0).getValue())-2.f)<.001f,
+            "v1 latent payload cannot override macro");
+
+    juce::MemoryBlock saved; processor.getStateInformation(saved);
+    auto parsed=juce::AudioProcessor::getXmlFromBinary(saved.getData(),int(saved.getSize()));
+    require(parsed && parsed->getIntAttribute("version")==2,"writes schema v2");
+    auto* dynamic=parsed->getChildByName("Latents");
+    require(dynamic && dynamic->getIntAttribute("firstIndex")==8,"v2 dynamic latents start after macros");
+
+    const auto before=processor.dryWetParameterReference().getValue();
+    juce::XmlElement unsupported("RavePluginState"); unsupported.setAttribute("version",99);unsupported.setAttribute("dryWet",.1);
+    block=xmlState(unsupported);processor.setStateInformation(block.getData(),int(block.getSize()));
+    require(processor.dryWetParameterReference().getValue()==before,"unsupported version fails closed");
+    juce::XmlElement nonfinite("RavePluginState");nonfinite.setAttribute("version",2);nonfinite.setAttribute("dryWet","nan");
+    block=xmlState(nonfinite);processor.setStateInformation(block.getData(),int(block.getSize()));
+    require(processor.dryWetParameterReference().getValue()==before,"non-finite state fails closed");
+    juce::XmlElement badLatent("RavePluginState"); badLatent.setAttribute("version",2); badLatent.setAttribute("dryWet",.1);
+    auto* badLatents=badLatent.createNewChildElement("Latents"); badLatents->setAttribute("count",1); badLatents->setAttribute("firstIndex",8); badLatents->setAttribute("v8","nan");
+    block=xmlState(badLatent);processor.setStateInformation(block.getData(),int(block.getSize()));
+    require(processor.dryWetParameterReference().getValue()==before,"invalid latent fails closed transactionally");
+    juce::XmlElement longPath("RavePluginState"); longPath.setAttribute("version",2); longPath.setAttribute("dryWet",.1); longPath.setAttribute("modelPath",juce::String::repeatedString("x",4097));
+    block=xmlState(longPath);processor.setStateInformation(block.getData(),int(block.getSize()));
+    require(processor.dryWetParameterReference().getValue()==before,"overlong model path fails closed transactionally");
+    std::vector<char> oversized(RavePluginProcessor::maximumStateBytes+1);
+    processor.setStateInformation(oversized.data(),int(oversized.size()));
+    require(processor.dryWetParameterReference().getValue()==before,"oversized state fails closed");
+
+    juce::XmlElement missing("RavePluginState");missing.setAttribute("version",2);missing.setAttribute("modelPath","/definitely/missing/rave-model.ts");
+    missing.setAttribute("dryWet",.75);missing.setAttribute("macro1",1.5);auto* lat=missing.createNewChildElement("Latents");lat->setAttribute("count",4);lat->setAttribute("firstIndex",8);
+    for(int i=8;i<12;++i)lat->setAttribute("v"+juce::String(i),float(i)/10.f);
+    block=xmlState(missing);processor.setStateInformation(block.getData(),int(block.getSize()));
+    require(processor.isRelinkRequired()&&processor.requestedModelPath().contains("rave-model.ts"),"missing identity retained for relink");
+    require(processor.modelStatus().containsIgnoreCase("relink required"),"missing model status visible");
+    require(std::abs(processor.dryWetParameterReference().convertFrom0to1(processor.dryWetParameterReference().getValue())-.75f)<.001f,"missing restore retains dry/wet");
+    require(std::abs(processor.macroParameterReference(0).convertFrom0to1(processor.macroParameterReference(0).getValue())-1.5f)<.001f,"missing restore retains macros");
+}
+
 void testFactoryAudioAndState()
 {
     std::unique_ptr<juce::AudioProcessor> processor(createPluginFilter());
@@ -139,8 +195,10 @@ void testModelAndLatentRecall(const juce::File& modelFile)
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     require(original->finishModelLoadIfReady(), "loaded model activates");
     require(original->latentDimensionCount() == 2, "fixture latent dimensions available");
-    require(original->setLatentControl(0, 1.25f), "first latent set");
-    require(original->setLatentControl(1, -2.5f), "second latent set");
+    original->macroParameterReference(0).setValueNotifyingHost(
+        original->macroParameterReference(0).convertTo0to1(1.25f));
+    original->macroParameterReference(1).setValueNotifyingHost(
+        original->macroParameterReference(1).convertTo0to1(-2.5f));
 
     juce::MemoryBlock state;
     original->getStateInformation(state);
@@ -645,6 +703,7 @@ void testRollbackFailureClearsLatentsAndSerializedModelPath(const juce::File& mo
 int main(const int argc, const char* const* argv)
 {
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
+    testStateSchemaMigrationsBoundsAndMacroAuthority();
     testFactoryAudioAndState();
     if (argc == 2)
     {

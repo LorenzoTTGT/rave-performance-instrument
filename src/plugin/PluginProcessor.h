@@ -22,6 +22,9 @@ class RavePluginProcessor final : public juce::AudioProcessor,
 public:
     static constexpr std::size_t macroCount = 8;
     static constexpr std::size_t midiTargetCount = macroCount + 1;
+    static constexpr int stateSchemaVersion = 2;
+    static constexpr std::size_t maximumStateBytes = 1024 * 1024;
+    static constexpr std::size_t maximumLatentCount = 4096;
 
     // The optional factory injects a test backend; production uses the
     // TorchScript backend factory.
@@ -58,6 +61,9 @@ public:
     [[nodiscard]] bool isLearningMidiTarget(std::size_t targetIndex) const noexcept;
 
     [[nodiscard]] bool startModelLoad(const juce::File& modelFile);
+    [[nodiscard]] bool relinkMissingModel(const juce::File& modelFile);
+    [[nodiscard]] bool isRelinkRequired() const noexcept;
+    [[nodiscard]] juce::String requestedModelPath() const;
     [[nodiscard]] bool finishModelLoadIfReady();
     [[nodiscard]] juce::String modelStatus() const;
     [[nodiscard]] bool isModelLoading() const noexcept;
@@ -83,7 +89,9 @@ private:
     void applyMidi(juce::MidiBuffer& midiMessages) noexcept;
     void activateModel(rave::ModelBackendPtr backend,
                        const juce::File& modelFile,
-                       const std::vector<float>& restoredLatents);
+                       const std::vector<float>& restoredLatents,
+                       std::uint64_t generation);
+    bool queueModelRequest(const juce::File&, std::vector<float>, bool relink);
     void publishModelLoadFailure(const std::string& errorMessage);
 
     rave::RaveAudioEngine engine;
@@ -104,6 +112,12 @@ private:
     juce::File queuedRestoreModelFile;
     std::vector<float> queuedRestoreLatents;
     std::vector<float> pendingLatentRestore;
+    std::uint64_t pendingGeneration = 0;
+    std::uint64_t queuedGeneration = 0;
+    std::atomic<std::uint64_t> requestGeneration { 0 };
+    juce::File requestedMissingModelFile;
+    std::vector<float> retainedMissingLatents;
+    bool relinkRequired = false;
     std::atomic<bool> hasQueuedModelRestore { false };
     std::atomic<std::uint64_t> currentModelRevision { 0 };
     // Lifecycle status refresh state (message thread only, guarded by

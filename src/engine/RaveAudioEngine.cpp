@@ -152,7 +152,13 @@ bool RaveAudioEngine::activateModelBackend(ModelBackendPtr candidate, std::strin
                             snapshot.maximumBlockSize,
                             configuredOutputChannels,
                             &startError))
+        {
+            const auto restoreCount = std::min(previousLatents.size(),
+                                               modelLatentDimensionCount.load(std::memory_order_acquire));
+            for (std::size_t index = 0; index < restoreCount; ++index)
+                static_cast<void>(inferenceWorker.setLatentControl(index, previousLatents[index]));
             return true;
+        }
 
         candidateError = startError.empty()
             ? std::string("candidate worker could not be started")

@@ -87,6 +87,23 @@ public:
     }
 };
 
+class TwelveLatentBackend final : public rave::ModelBackend
+{
+public:
+    explicit TwelveLatentBackend(bool compatibleOnly = false) : strict(compatibleOnly) {}
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 12; }
+    int modelSampleRate() const noexcept override { return strict ? 48000 : 0; }
+    bool supportsConfiguration(double rate, std::size_t block) const noexcept override
+    { return !strict || (std::abs(rate - 48000.0) < 0.5 && block == 2048); }
+    bool process(std::span<const float> input, std::span<const float> latents,
+                 std::span<float> output) override
+    { for (std::size_t i=0;i<input.size();++i) output[i]=input[i]+latents[11]; return true; }
+private: bool strict;
+};
+
 class ControlledBackend final : public rave::ModelBackend
 {
 public:
@@ -1508,6 +1525,27 @@ void testRuntimeNonFiniteOutputFallsBackToDry()
     engine.release();
 }
 
+void testTwelveLatentsSurviveLifecycleAndReplacement()
+{
+    rave::RaveAudioEngine engine;
+    engine.prepare(48000.0, 64, 2);
+    require(engine.activateModelBackend(std::make_shared<TwelveLatentBackend>(true)), "12-latent model activates");
+    for (std::size_t i=0;i<12;++i) require(engine.setLatentControl(i, float(i)-5.5f), "set latent");
+    const auto verify = [&] { for (std::size_t i=0;i<12;++i) require(std::abs(engine.latentControl(i)-(float(i)-5.5f))<0.001f, "all latents preserved"); };
+    engine.prepare(48000.0, 128, 2); verify();
+    engine.prepare(44100.0, 128, 2); verify();
+    engine.release(); verify();
+    TestAudioDevice device; engine.audioDeviceAboutToStart(&device); verify();
+    engine.audioDeviceStopped(); verify();
+    engine.prepare(48000.0, 64, 2);
+    require(engine.activateModelBackend(std::make_shared<TwelveLatentBackend>(true)), "replacement activates"); verify();
+    std::array<float,64> left{},right{}; left.fill(0.25f); right.fill(0.25f);
+    const float* inputs[]{left.data(),right.data()}; float* outputs[]{left.data(),right.data()};
+    engine.processAudio(inputs,2,outputs,2,64);
+    for(float value:left) require(std::isfinite(value), "audio remains finite after latent restoration");
+    engine.release();
+}
+
 } // namespace
 
 int main()
@@ -1539,5 +1577,6 @@ int main()
     testLifecycleStatusFormatterCoversAllStates();
     testRepeatedPrepareReleaseCyclesRemainBounded();
     testRuntimeNonFiniteOutputFallsBackToDry();
+    testTwelveLatentsSurviveLifecycleAndReplacement();
     std::cout << "RaveAudioEngine tests passed\n";
 }

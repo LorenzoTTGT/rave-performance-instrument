@@ -1,5 +1,9 @@
 # RAVE Instrument Qualification Contract
 
+## RAVE-04 core state checks
+
+The nonvisual standalone state test exercises a 12-latent bounded preset round trip, MIDI learn/clear/unique reassignment, dry/wet and latent CC ranges, selected MIDI input identity, and audio input/output device identity. Plug-in state schema 2 is capped at 1 MiB and 4096 latents; dimensions 0–7 come only from the stable host macros while dynamic state begins at dimension 8. Missing saved paths remain visible and relinkable. UI and real-host qualification are intentionally not claimed here.
+
 ## Purpose
 
 This document defines the measurable acceptance contract for the dependable one-model Transform milestone. It does not claim that the thresholds currently pass. Results must identify the exact source revision, model file hash, hardware, host, sample rate, buffer size, and test duration.

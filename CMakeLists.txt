@@ -35,6 +35,8 @@ add_library(rave_engine STATIC
     src/model/ModelBackend.h
     src/model/ModelQualification.cpp
     src/model/ModelQualification.h
+    src/state/StandaloneSessionState.cpp
+    src/state/StandaloneSessionState.h
 )
 
 target_include_directories(rave_engine PUBLIC src)
@@ -81,6 +83,10 @@ if(BUILD_TESTING)
     add_executable(rave_audio_engine_tests tests/RaveAudioEngineTests.cpp)
     target_link_libraries(rave_audio_engine_tests PRIVATE rave_engine)
     add_test(NAME rave_audio_engine_tests COMMAND rave_audio_engine_tests)
+
+    add_executable(rave_standalone_state_tests tests/StandaloneSessionStateTests.cpp)
+    target_link_libraries(rave_standalone_state_tests PRIVATE rave_engine juce::juce_core)
+    add_test(NAME rave_standalone_state_tests COMMAND rave_standalone_state_tests)
 
     add_executable(rave_model_loader_tests tests/BackgroundModelLoaderTests.cpp)
     target_link_libraries(rave_model_loader_tests PRIVATE rave_engine)
