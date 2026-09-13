@@ -47,6 +47,8 @@ public:
     // Clears epoch-scoped counters while stopped. A subsequent reset failure
     // in start() is therefore visible in the new epoch.
     void resetRuntimeTelemetry() noexcept;
+    // Discards all queued samples/tags while stopped without allocation.
+    void clearQueues() noexcept;
     [[nodiscard]] bool isRunning() const noexcept;
 
     [[nodiscard]] bool trySubmit(const float* samples,

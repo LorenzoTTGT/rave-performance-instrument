@@ -314,6 +314,7 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         startError->clear();
 
     inferenceWorker.stop();
+    inferenceWorker.clearQueues();
     inferenceWorker.resetRuntimeTelemetry();
     runtimePrepared.store(false, std::memory_order_release);
     sampleClock = 0;

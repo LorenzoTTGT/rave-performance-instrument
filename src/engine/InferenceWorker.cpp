@@ -141,6 +141,14 @@ void InferenceWorker::stop() noexcept
     running.store(false, std::memory_order_release);
 }
 
+void InferenceWorker::clearQueues() noexcept
+{
+    if (isRunning())
+        return;
+    inputQueue.reset();
+    outputQueue.reset();
+}
+
 void InferenceWorker::resetRuntimeTelemetry() noexcept
 {
     if (isRunning())

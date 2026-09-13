@@ -29,6 +29,15 @@ void require(const bool condition, const char* const message)
     }
 }
 
+template <typename Predicate>
+void requireEventually(Predicate predicate, const char* const message)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!predicate() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    require(predicate(), message);
+}
+
 class TestAudioDevice final : public juce::AudioIODevice
 {
 public:
@@ -85,11 +94,20 @@ public:
     bool load(const std::string&, std::string&) override { return true; }
     bool reset(std::string&) override { release.store(false); completed.store(false); return true; }
     std::size_t latentDimensionCount() const noexcept override { return 0; }
+    int modelSampleRate() const noexcept override { return 48000; }
+    bool supportsConfiguration(const double rate, std::size_t) const noexcept override
+    {
+        return std::abs(rate - 48000.0) < 0.5;
+    }
     bool process(std::span<const float> input, std::span<const float>, std::span<float> output) override
     {
         entered.store(true, std::memory_order_release);
-        while (!release.load(std::memory_order_acquire))
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!release.load(std::memory_order_acquire)
+               && std::chrono::steady_clock::now() < deadline)
             std::this_thread::yield();
+        if (!release.load(std::memory_order_acquire))
+            return false;
         for (std::size_t i = 0; i < input.size(); ++i) output[i] = input[i] * 2.0f;
         completed.store(true, std::memory_order_release);
         completedCount.fetch_add(1, std::memory_order_release);
@@ -538,9 +556,9 @@ void testControlledWorkerDeadlineIntegration()
     std::vector<float> input(2048, 1.0f), output(2048);
     const float* inputs[] { input.data() }; float* outputs[] { output.data() };
     engine.processAudio(inputs, 1, outputs, 1, 2048);
-    while (!backend->entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    requireEventually([&] { return backend->entered.load(std::memory_order_acquire); }, "timely backend entered worker");
     backend->release.store(true, std::memory_order_release);
-    while (!backend->completed.load(std::memory_order_acquire)) std::this_thread::yield();
+    requireEventually([&] { return backend->completed.load(std::memory_order_acquire); }, "timely backend completed worker output");
     engine.processAudio(inputs, 1, outputs, 1, 1808); // reaches D(0)
     engine.processAudio(inputs, 1, outputs, 1, 240);  // commit then reaches P(0)
     engine.processAudio(inputs, 1, outputs, 1, 512);
@@ -550,10 +568,10 @@ void testControlledWorkerDeadlineIntegration()
     auto lateBackend = std::make_shared<ControlledBackend>();
     rave::RaveAudioEngine late; late.setModelBackend(lateBackend); late.prepare(48000.0, 2048, 1);
     late.processAudio(inputs, 1, outputs, 1, 2048);
-    while (!lateBackend->entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    requireEventually([&] { return lateBackend->entered.load(std::memory_order_acquire); }, "late backend entered worker");
     late.processAudio(inputs, 1, outputs, 1, 1809); // commits dry and passes D(0)
     lateBackend->release.store(true, std::memory_order_release);
-    while (!lateBackend->completed.load(std::memory_order_acquire)) std::this_thread::yield();
+    requireEventually([&] { return lateBackend->completed.load(std::memory_order_acquire); }, "late backend completed worker output");
     late.processAudio(inputs, 1, outputs, 1, 2048); // D(1) drains stale frame zero
     require(late.runtimeTelemetry().lateResults == 1, "late real-worker result is permanently rejected");
     late.release();
@@ -564,22 +582,71 @@ void testControlledWorkerDeadlineIntegration()
     overloaded.prepare(48000.0, 2048, 1);
     overloaded.setDryWet(1.0f);
     overloaded.processAudio(inputs, 1, outputs, 1, 2048);
-    while (!overloadedBackend->entered.load(std::memory_order_acquire)) std::this_thread::yield();
+    requireEventually([&] { return overloadedBackend->entered.load(std::memory_order_acquire); }, "overload backend entered worker");
     for (int frame = 0; frame < 5; ++frame)
+    {
         overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+        if (frame >= 1)
+            require(std::abs(output[500] - 1.0f) < 0.0001f,
+                    "each saturated committed slot renders exact delayed dry");
+    }
     require(overloaded.runtimeTelemetry().queueDrops > 0,
             "controlled worker saturation is reported without shifting the timeline");
     overloadedBackend->release.store(true, std::memory_order_release);
-    while (overloadedBackend->completedCount.load(std::memory_order_acquire) < 2)
-        std::this_thread::yield();
-    const auto completedBeforeRecovery = overloadedBackend->completedCount.load(std::memory_order_acquire);
+    requireEventually([&] { return overloadedBackend->completedCount.load(std::memory_order_acquire) >= 2; },
+                      "overload backend drains queued work");
+    const auto acceptedBeforeRecovery = 6u - overloaded.runtimeTelemetry().queueDrops;
     overloaded.processAudio(inputs, 1, outputs, 1, 2048);
-    while (overloadedBackend->completedCount.load(std::memory_order_acquire) <= completedBeforeRecovery)
-        std::this_thread::yield();
+    requireEventually([&] {
+        return overloadedBackend->completedCount.load(std::memory_order_acquire)
+            >= static_cast<int>(acceptedBeforeRecovery + 1u);
+    }, "overload backend processes the distinct recovery frame");
     overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+    overloaded.processAudio(inputs, 1, outputs, 1, 512);
+    require(output[500] > 1.9f,
+            "recovered current frame renders wet only at its own playback slot");
     require(overloaded.runtimeTelemetry().deadlineMisses > 0,
             "overload commits aligned dry misses permanently before recovery");
     overloaded.release();
+}
+
+void testWorkerQueuesAreClearedAcrossPrepareEpochs()
+{
+    const auto run = [](const bool incompatible) {
+        auto backend = std::make_shared<ControlledBackend>();
+        rave::RaveAudioEngine engine;
+        engine.setModelBackend(backend);
+        engine.prepare(48000.0, 2048, 1);
+        engine.setDryWet(1.0f);
+        std::vector<float> input(2048, 1.0f), output(2048);
+        const float* inputs[] { input.data() }; float* outputs[] { output.data() };
+        engine.processAudio(inputs, 1, outputs, 1, 2048);
+        requireEventually([&] { return backend->entered.load(std::memory_order_acquire); },
+                          "old epoch backend entered");
+        backend->release.store(true, std::memory_order_release);
+        requireEventually([&] { return backend->completed.load(std::memory_order_acquire); },
+                          "old epoch output queued");
+        engine.release();
+        if (incompatible)
+            engine.prepare(44100.0, 2048, 1);
+        else
+        {
+            engine.setModelBackend(nullptr);
+            engine.prepare(48000.0, 2048, 1);
+        }
+        std::fill(input.begin(), input.end(), 0.25f);
+        engine.processAudio(inputs, 1, outputs, 1, 2048);
+        engine.processAudio(inputs, 1, outputs, 1, 2048);
+        engine.processAudio(inputs, 1, outputs, 1, 2048);
+        require(std::abs(output[500] - 0.25f) < 0.0001f,
+                "old worker output cannot collide with reused new-epoch frame tags");
+        if (incompatible)
+            require(engine.hasModelBackend() && !engine.hasUsableModel(),
+                    "incompatible prepare preserves installed-model lifecycle truth");
+        engine.release();
+    };
+    run(true);
+    run(false);
 }
 
 void testRuntimeConfigurationReporting()
@@ -1393,6 +1460,7 @@ int main()
     testExactDeadlineAndReleaseInvalidation();
     testPrepareValidationAndTelemetryEpochReset();
     testControlledWorkerDeadlineIntegration();
+    testWorkerQueuesAreClearedAcrossPrepareEpochs();
     testRuntimeConfigurationReporting();
     testActivationRechecksCurrentConfiguration();
     testFailedActivationPreservesPreviousBackend();
