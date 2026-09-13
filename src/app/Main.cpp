@@ -251,8 +251,9 @@ private:
                                                            {},
                                                            engine.latentDimensionCount(),
                                                            utf8("Audio pass-through ready — no model loaded"));
+            const auto candidateCause = rave::candidateFailureCause(activationFailure);
             status.setText(juce::String("Model activation failed: ")
-                               + utf8(activationFailure.c_str())
+                               + utf8(candidateCause.c_str())
                                + juce::String(juce::CharPointer_UTF8(" — current state: "))
                                + current,
                            juce::dontSendNotification);

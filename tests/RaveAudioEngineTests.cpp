@@ -1000,6 +1000,51 @@ void testPostReattachStatusDerivesFromCurrentLifecycleState()
     engine.audioDeviceStopped();
 }
 
+void testCandidateFailureStatusUsesPostReattachState()
+{
+    rave::RaveAudioEngine engine;
+    engine.prepare(48000.0, 4, 2);
+
+    // Reset 1 activates, reset 2 successfully restarts this backend during
+    // candidate rollback, and reset 3 fails on callback reattachment.
+    auto previous = std::make_shared<ResetCountingBackend>(3, 0, 1);
+    std::string failureReason;
+    require(engine.activateModelBackend(previous, &failureReason), "previous model activates");
+
+    auto candidate = std::make_shared<ResetCountingBackend>(1);
+    require(!engine.activateModelBackend(candidate, &failureReason),
+            "candidate reset failure rolls back successfully");
+    require(failureReason.find("reset refused on call 1") != std::string::npos,
+            "activation failure preserves the candidate cause");
+    require(failureReason.find("previous model retained") != std::string::npos,
+            "activation-time outcome records successful rollback");
+
+    engine.release();
+    engine.prepare(48000.0, 4, 2); // callback reattachment reset now fails
+    const auto current = rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
+                                                   engine.hasUsableModel(),
+                                                   engine.hasModelBackend(),
+                                                   {},
+                                                   engine.latentDimensionCount(),
+                                                   "Audio pass-through ready — no model loaded");
+    const auto candidateCause = rave::candidateFailureCause(failureReason);
+    const auto combined = juce::String("Model activation failed: ")
+        + juce::String(candidateCause)
+        + juce::String(juce::CharPointer_UTF8(" — current state: "))
+        + current;
+
+    require(combined.contains("reset refused on call 1"),
+            "post-reattach status preserves the invariant candidate cause");
+    require(combined.containsIgnoreCase("dry pass-through"),
+            "post-reattach status reports the authoritative current dry state");
+    require(!combined.containsIgnoreCase("previous model retained"),
+            "post-reattach status drops the stale activation-time retention outcome");
+    require(!combined.containsIgnoreCase("active —"),
+            "post-reattach status makes no contradictory active claim");
+
+    engine.audioDeviceStopped();
+}
+
 void testLifecycleStatusFormatterCoversAllStates()
 {
     const std::string diagnostic("Model sample rate 48000 Hz does not match the active 44100 Hz "
@@ -1110,6 +1155,7 @@ int main()
     testThreadStartFailureAtReprepareIsContained();
     testFailedRollbackWithLatentPreviousClearsWorkerLatentState();
     testPostReattachStatusDerivesFromCurrentLifecycleState();
+    testCandidateFailureStatusUsesPostReattachState();
     testLifecycleStatusFormatterCoversAllStates();
     testRepeatedPrepareReleaseCyclesRemainBounded();
     testRuntimeNonFiniteOutputFallsBackToDry();

@@ -9,6 +9,16 @@
 
 namespace rave
 {
+// Activation failure strings also carry the activation-time rollback outcome
+// after the first semicolon. That suffix is transient: callback reattachment
+// may immediately change usability. Keep only the invariant candidate cause
+// when composing a status with a later lifecycle snapshot.
+[[nodiscard]] inline std::string candidateFailureCause(const std::string& activationFailure)
+{
+    const auto outcomeSeparator = activationFailure.find(';');
+    return activationFailure.substr(0, outcomeSeparator);
+}
+
 // Shared presenter for engine lifecycle state, used verbatim by the plugin
 // status surface and the standalone app status label so both render identical,
 // truthful text:
