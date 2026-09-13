@@ -1,5 +1,6 @@
 #include "engine/InferenceWorker.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -56,6 +57,27 @@ public:
     std::atomic<bool> resetCalled { false };
     std::atomic<bool> failProcessing { false };
     std::thread::id processThread;
+};
+
+class BlockingBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+    bool process(const std::span<const float> input,
+                 const std::span<const float>,
+                 const std::span<float> output) override
+    {
+        entered.store(true, std::memory_order_release);
+        while (!proceed.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        std::copy(input.begin(), input.end(), output.begin());
+        return true;
+    }
+    std::atomic<bool> entered { false };
+    std::atomic<bool> proceed { false };
 };
 
 class ThrowingBackend final : public rave::ModelBackend
@@ -247,6 +269,24 @@ void testNonFiniteOutputIsDropped()
     worker.stop();
 }
 
+void testQueueSaturationIsBoundedAndCounted()
+{
+    auto backend = std::make_shared<BlockingBackend>();
+    rave::InferenceWorker worker;
+    worker.setBackend(backend);
+    worker.prepare(48000.0, 4, 1);
+    require(worker.start(), "saturation worker starts");
+    const std::array<float, 4> input { 1, 2, 3, 4 };
+    require(worker.trySubmit(input.data(), input.size(), 1), "blocking frame submitted");
+    while (!backend->entered.load(std::memory_order_acquire))
+        std::this_thread::yield();
+    require(worker.trySubmit(input.data(), input.size(), 2), "single queued frame accepted");
+    require(!worker.trySubmit(input.data(), input.size(), 3), "saturated queue rejects without waiting");
+    require(worker.droppedInputBlockCount() == 1, "saturated input drop counted exactly");
+    backend->proceed.store(true, std::memory_order_release);
+    worker.stop();
+}
+
 void testRepeatedPrepareStartStopAndReplacementRemainsBounded()
 {
     rave::InferenceWorker worker;
@@ -341,6 +381,7 @@ int main()
     testProcessingErrorsAreCounted();
     testThrowingBackendIsCountedSafely();
     testNonFiniteOutputIsDropped();
+    testQueueSaturationIsBoundedAndCounted();
     testRepeatedPrepareStartStopAndReplacementRemainsBounded();
     std::cout << "InferenceWorker tests passed\n";
 }

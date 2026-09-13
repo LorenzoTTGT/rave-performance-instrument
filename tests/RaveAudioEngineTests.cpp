@@ -363,34 +363,58 @@ void testDryFallbackWithoutModel()
 void testProcessedAudioUsesMatchingDelayedDryBlock()
 {
     rave::RaveAudioEngine engine;
-    engine.setModelBackend(std::make_shared<GainBackend>());
-    engine.setDryWet(0.5f);
+    engine.prepare(48000.0, 17, 2);
 
-    TestAudioDevice device;
-    engine.audioDeviceAboutToStart(&device);
-
-    bool observedProcessedBlock = false;
-    for (int block = 1; block <= 40 && !observedProcessedBlock; ++block)
+    std::vector<float> input(5000);
+    for (std::size_t i = 0; i < input.size(); ++i)
+        input[i] = static_cast<float>(i + 1);
+    std::vector<float> output(input.size(), -1.0f);
+    const std::array<int, 7> partitions { 1, 31, 2049, 7, 511, 1300, 1101 };
+    std::size_t offset = 0;
+    for (const auto count : partitions)
     {
-        std::array<float, 4> left;
-        std::array<float, 4> right;
-        left.fill(static_cast<float>(100 + block));
-        right.fill(static_cast<float>(1000 + block));
-        const float* inputs[] { left.data(), right.data() };
-        std::array<float, 4> outputLeft {};
-        std::array<float, 4> outputRight {};
-        float* outputs[] { outputLeft.data(), outputRight.data() };
-
-        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-        if (std::abs((outputRight[0] - outputLeft[0]) - 450.0f) < 0.001f)
-            observedProcessedBlock = true;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        const float* inputs[] { input.data() + offset, input.data() + offset };
+        float* outputs[] { output.data() + offset, output.data() + offset };
+        engine.processAudio(inputs, 2, outputs, 2, count);
+        offset += static_cast<std::size_t>(count);
     }
-
-    engine.audioDeviceStopped();
-    require(observedProcessedBlock, "engine emits aligned delayed dry/wet mix");
+    require(offset == input.size(), "variable partitions cover the stream");
+    for (std::size_t i = 0; i < rave::RaveAudioEngine::transportLatencySamples; ++i)
+        require(output[i] == 0.0f, "prepared transport emits silence before its exact latency");
+    for (std::size_t i = rave::RaveAudioEngine::transportLatencySamples; i < output.size(); ++i)
+        require(output[i] == input[i - rave::RaveAudioEngine::transportLatencySamples],
+                "variable partitions preserve exact delayed-dry indexing");
+    require(engine.runtimeTelemetry().transportReady, "telemetry reports transport readiness");
 }
+
+void testDeterministicResultValidationAndFade()
+{
+    rave::RaveAudioEngine engine;
+    engine.prepare(48000.0, 64, 1);
+    std::vector<float> input(2048, 1.0f), output(2048);
+    const float* inputs[] { input.data() };
+    float* outputs[] { output.data() };
+    engine.processAudio(inputs, 1, outputs, 1, 2048);
+
+    std::vector<float> wet(2048, 3.0f);
+    require(!engine.publishResultForTesting(wet.data(), 2047, 0), "malformed result rejected");
+    require(!engine.publishResultForTesting(wet.data(), wet.size(), 9), "future result rejected");
+    require(engine.publishResultForTesting(wet.data(), wet.size(), 0), "current result committed");
+    require(!engine.publishResultForTesting(wet.data(), wet.size(), 0), "duplicate result rejected");
+    require(engine.runtimeTelemetry().alignmentErrors == 3, "invalid result semantics counted precisely");
+
+    engine.processAudio(inputs, 1, outputs, 1, 2048);
+    engine.setDryWet(1.0f);
+    engine.processAudio(inputs, 1, outputs, 1, 1);
+    const auto expected = 1.0f + 2.0f / (240.0f * 240.0f);
+    require(std::abs(output[0] - expected) < 0.00001f,
+            "dry/wet and availability ramps start independently over exactly 5 ms");
+
+    engine.processAudio(inputs, 1, outputs, 1, 2047);
+    require(!engine.publishResultForTesting(wet.data(), wet.size(), 0), "late result rejected");
+    require(engine.runtimeTelemetry().lateResults == 1, "late result counted precisely");
+}
+
 void testRuntimeConfigurationReporting()
 {
     rave::RaveAudioEngine engine;
@@ -447,24 +471,19 @@ void testActivationRechecksCurrentConfiguration()
 
 bool runCallbacksUntilProcessed(rave::RaveAudioEngine& engine)
 {
-    for (int block = 1; block <= 80; ++block)
-    {
-        std::array<float, 4> left;
-        std::array<float, 4> right;
-        left.fill(static_cast<float>(100 + block));
-        right.fill(static_cast<float>(1000 + block));
-        const float* inputs[] { left.data(), right.data() };
-        std::array<float, 4> outputLeft {};
-        std::array<float, 4> outputRight {};
-        float* outputs[] { outputLeft.data(), outputRight.data() };
+    std::vector<float> left(2048, 100.0f);
+    std::vector<float> right(2048, 1000.0f);
+    const float* inputs[] { left.data(), right.data() };
+    std::vector<float> outputLeft(2048);
+    std::vector<float> outputRight(2048);
+    float* outputs[] { outputLeft.data(), outputRight.data() };
+    engine.processAudio(inputs, 2, outputs, 2, 2048);
 
-        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-        if (std::abs((outputRight[0] - outputLeft[0]) - 450.0f) < 0.001f)
-            return true;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return false;
+    std::vector<float> wet(2048, 300.0f);
+    static_cast<void>(engine.publishResultForTesting(wet.data(), wet.size(), 0));
+    engine.processAudio(inputs, 2, outputs, 2, 2048);
+    engine.processAudio(inputs, 2, outputs, 2, 2048);
+    return std::abs((outputRight.back() - outputLeft.back()) - 450.0f) < 0.001f;
 }
 
 void testFailedActivationPreservesPreviousBackend()
@@ -605,8 +624,8 @@ void testActivationFailureWithoutPreviousModelReportsDryFallback()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == input && outputRight == input,
-            "engine passes dry audio after activation failure");
+    require(outputLeft == std::array<float, 4> {} && outputRight == std::array<float, 4> {},
+            "engine holds delayed dry audio after activation failure");
 }
 
 void testFailedRollbackRestartFallsBackToDry()
@@ -636,8 +655,8 @@ void testFailedRollbackRestartFallsBackToDry()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == input && outputRight == input,
-            "engine passes dry audio after a failed rollback restart");
+    require(outputLeft == std::array<float, 4> {} && outputRight == std::array<float, 4> {},
+            "engine holds delayed dry audio after a failed rollback restart");
     require(engine.lifecycleDiagnostic().find("dry pass-through") != std::string::npos,
             "rollback failure leaves a lifecycle diagnostic");
 
@@ -790,8 +809,8 @@ void testIncompatibleReprepareYieldsTruthfulDryFallback()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == input && outputRight == input,
-            "nonzero input passes through as bounded dry audio after incompatible reprepare");
+    require(outputLeft == std::array<float, 4> {} && outputRight == std::array<float, 4> {},
+            "nonzero input remains on the bounded delayed-dry timeline after incompatible reprepare");
 
     // Returning to the compatible configuration restores usability.
     engine.prepare(48000.0, 4, 2);
@@ -836,7 +855,7 @@ void testReleasePublishesUsabilityTransition()
                                                     "No model loaded");
     require(released.containsIgnoreCase("not running"),
             "formatter renders installed-but-not-running after release");
-    require(!released.containsIgnoreCase("active —"), "no active claim after release");
+    require(!released.containsIgnoreCase("active"), "no active claim after release");
 
     // Reprepare after release restores usability and the active claim.
     engine.prepare(48000.0, 4, 2);
@@ -877,8 +896,8 @@ void testPrepareThrowAtReprepareIsContained()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == input && outputRight == input,
-            "nonzero input passes through as bounded dry audio after the prepare throw");
+    require(outputLeft == std::array<float, 4> {} && outputRight == std::array<float, 4> {},
+            "nonzero input remains on the bounded delayed-dry timeline after the prepare throw");
 
     // A later prepare beyond the throw window recovers usability.
     engine.prepare(48000.0, 4, 2);
@@ -910,8 +929,8 @@ void testResetThrowAtReprepareIsContained()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == input && outputRight == input,
-            "nonzero input passes through as bounded dry audio after the reset throw");
+    require(outputLeft == std::array<float, 4> {} && outputRight == std::array<float, 4> {},
+            "nonzero input remains on the bounded delayed-dry timeline after the reset throw");
 
     // A later prepare beyond the throw window recovers usability.
     engine.prepare(48000.0, 4, 2);
@@ -947,7 +966,7 @@ void testThreadStartFailureAtReprepareIsContained()
     require(status.containsIgnoreCase("worker thread could not start")
                 && status.containsIgnoreCase("dry pass-through"),
             "status presenter renders the thread-start failure");
-    require(!status.containsIgnoreCase("active —"), "no active claim while the worker cannot start");
+    require(!status.containsIgnoreCase("active"), "no active claim while the worker cannot start");
 
     // Recovery once the injected failure is cleared.
     engine.prepare(48000.0, 4, 2);
@@ -987,8 +1006,8 @@ void testFailedRollbackWithLatentPreviousClearsWorkerLatentState()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == input && outputRight == input,
-            "engine passes dry audio after abandoning the backend");
+    require(outputLeft == std::array<float, 4> {} && outputRight == std::array<float, 4> {},
+            "engine holds delayed dry audio after abandoning the backend");
 
     engine.audioDeviceStopped();
 }
@@ -1014,10 +1033,10 @@ void testPostReattachStatusDerivesFromCurrentLifecycleState()
                                                   engine.hasModelBackend(),
                                                   {},
                                                   engine.latentDimensionCount(),
-                                                  "Audio pass-through ready — no model loaded");
+                                                  "Audio pass-through ready - no model loaded");
     require(failed.containsIgnoreCase("dry pass-through"),
             "post-reattach status names the dry fallback");
-    require(!failed.containsIgnoreCase("active —"),
+    require(!failed.containsIgnoreCase("active"),
             "post-reattach status keeps no active claim after the failed prepare");
 
     // A later successful prepare derives the active claim again.
@@ -1027,7 +1046,7 @@ void testPostReattachStatusDerivesFromCurrentLifecycleState()
                                                      engine.hasModelBackend(),
                                                      {},
                                                      engine.latentDimensionCount(),
-                                                     "Audio pass-through ready — no model loaded");
+                                                     "Audio pass-through ready - no model loaded");
     require(recovered.containsIgnoreCase("active"), "post-reattach status shows the active claim on recovery");
 
     engine.audioDeviceStopped();
@@ -1059,7 +1078,7 @@ void testCandidateFailureStatusUsesPostReattachState()
                                                    engine.hasModelBackend(),
                                                    {},
                                                    engine.latentDimensionCount(),
-                                                   "Audio pass-through ready — no model loaded");
+                                                   "Audio pass-through ready - no model loaded");
     const auto snapshot = engine.lifecycleStatusSnapshot();
     const rave::RaveAudioEngine::LifecycleStatusSnapshot abandonedSnapshot {
         snapshot.revision, false, false, "dry pass-through", 2
@@ -1082,7 +1101,7 @@ void testCandidateFailureStatusUsesPostReattachState()
             "post-reattach status reports the authoritative current dry state");
     require(!combined.containsIgnoreCase("previous model retained"),
             "post-reattach status drops the stale activation-time retention outcome");
-    require(!combined.containsIgnoreCase("active —"),
+    require(!combined.containsIgnoreCase("active"),
             "post-reattach status makes no contradictory active claim");
 
     engine.audioDeviceStopped();
@@ -1115,7 +1134,7 @@ void testLifecycleStatusFormatterCoversAllStates()
         "Model load failed: malformed metadata", released, "model.ts", "No model loaded");
     require(failedAfterRelease.containsIgnoreCase("model load failed")
                 && failedAfterRelease.containsIgnoreCase("installed but not running")
-                && !failedAfterRelease.containsIgnoreCase("active —"),
+                && !failedAfterRelease.containsIgnoreCase("active"),
             "standalone failed-result presenter uses the captured released state");
     const rave::RaveAudioEngine::LifecycleStatusSnapshot laterFailure {
         8, true, false, "later reset failed — bounded dry pass-through", 2
@@ -1146,7 +1165,7 @@ void testLifecycleStatusFormatterCoversAllStates()
             "installed-but-silent model renders the not-running claim");
 
     const auto none = rave::lifecycleStatusText({}, false, false, {}, 0,
-                                                "Audio pass-through ready — no model loaded");
+                                                "Audio pass-through ready - no model loaded");
     require(none.containsIgnoreCase("no model loaded"), "missing model renders the no-model text");
 }
 
@@ -1168,54 +1187,42 @@ void testRepeatedPrepareReleaseCyclesRemainBounded()
     std::array<float, 4> outputRight {};
     float* outputs[] { outputLeft.data(), outputRight.data() };
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-    require(outputLeft == left, "callback passes dry audio after repeated cycles");
+    require(outputLeft == std::array<float, 4> {}, "callback holds delayed dry audio after repeated cycles");
 }
 
 void testRuntimeNonFiniteOutputFallsBackToDry()
 {
     rave::RaveAudioEngine engine;
-    engine.prepare(48000.0, 4, 2);
-    auto backend = std::make_shared<IntermittentNonFiniteBackend>();
-    require(engine.activateModelBackend(backend), "non-finite test model activates");
+    engine.prepare(48000.0, 2048, 2);
+    engine.setModelBackend(std::make_shared<IntermittentNonFiniteBackend>());
+    engine.prepare(48000.0, 2048, 2);
     engine.setDryWet(0.5f);
 
-    TestAudioDevice device;
-    engine.audioDeviceAboutToStart(&device);
-
-    bool observedProcessedBlock = false;
-    for (int block = 1; block <= 80; ++block)
-    {
-        std::array<float, 4> left;
-        std::array<float, 4> right;
-        left.fill(static_cast<float>(100 + block));
-        right.fill(static_cast<float>(1000 + block));
-        const float* inputs[] { left.data(), right.data() };
-        std::array<float, 4> outputLeft {};
-        std::array<float, 4> outputRight {};
-        float* outputs[] { outputLeft.data(), outputRight.data() };
-
-        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4, {});
-        for (const auto sample : outputLeft)
-            require(std::isfinite(sample), "output stays finite after runtime divergence");
-        for (const auto sample : outputRight)
-            require(std::isfinite(sample), "output stays finite after runtime divergence");
-        if (std::abs((outputRight[0] - outputLeft[0]) - 450.0f) < 0.001f)
-            observedProcessedBlock = true;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-
-    engine.audioDeviceStopped();
-    require(observedProcessedBlock, "diverging model produced valid blocks before divergence");
-    require(engine.missedInferenceDeadlineCount() > 0,
-            "dropped non-finite blocks surface as missed deadlines");
+    std::vector<float> input(2048, 1.0f);
+    std::vector<float> left(2048), right(2048);
+    const float* inputs[] { input.data(), input.data() };
+    float* outputs[] { left.data(), right.data() };
+    engine.processAudio(inputs, 2, outputs, 2, 2048);
+    engine.processAudio(inputs, 2, outputs, 2, 2048);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (engine.runtimeTelemetry().processingErrors == 0
+           && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    require(engine.runtimeTelemetry().processingErrors == 1,
+            "non-finite worker result is rejected and counted");
+    engine.processAudio(inputs, 2, outputs, 2, 2048);
+    for (const auto sample : left)
+        require(std::isfinite(sample), "fallback remains finite");
+    engine.release();
 }
+
 } // namespace
 
 int main()
 {
     testDryFallbackWithoutModel();
     testProcessedAudioUsesMatchingDelayedDryBlock();
+    testDeterministicResultValidationAndFade();
     testRuntimeConfigurationReporting();
     testActivationRechecksCurrentConfiguration();
     testFailedActivationPreservesPreviousBackend();

@@ -80,12 +80,17 @@ void testFactoryAudioAndState()
     buffer.copyFrom(1, 0, right.data(), 4);
     juce::MidiBuffer midi;
     processor->processBlock(buffer, midi);
-    require(std::equal(left.begin(), left.end(), buffer.getReadPointer(0)), "dry left pass-through");
-    require(std::equal(right.begin(), right.end(), buffer.getReadPointer(1)), "dry right pass-through");
+    require(processor->getLatencySamples() == 4096, "plugin reports fixed transport latency");
+    for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        require(buffer.getSample(0, sample) == 0.0f && buffer.getSample(1, sample) == 0.0f,
+                "prepared plugin observes the fixed delayed transport");
 
     auto* dryWet = findParameter(*processor, "dryWet");
     require(dryWet != nullptr, "dry/wet parameter exposed");
     require(processor->getParameters().size() == 9, "stable dry/wet plus eight macro parameters");
+    for (std::size_t index = 0; index < RavePluginProcessor::macroCount; ++index)
+        require(findParameter(*processor, "macro" + juce::String(index + 1)) != nullptr,
+                "stable macro parameter ID exposed");
     dryWet->setValueNotifyingHost(dryWet->convertTo0to1(0.73f));
     juce::MemoryBlock state;
     processor->getStateInformation(state);

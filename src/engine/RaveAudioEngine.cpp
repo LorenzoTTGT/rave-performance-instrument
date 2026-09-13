@@ -415,35 +415,51 @@ void RaveAudioEngine::release() noexcept
     setLifecycleStateLocked({}, false);
 }
 
+bool RaveAudioEngine::commitResult(const float* const samples,
+                                   const std::size_t count,
+                                   const std::uint64_t frame,
+                                   const std::uint64_t currentOutputFrame) noexcept
+{
+    if (samples == nullptr || count != inferenceQuantumSamples || frame >= submittedFrame)
+    {
+        alignmentErrors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (frame < currentOutputFrame)
+    {
+        lateResults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
+    if (wetFrameTags[slot] == frame)
+    {
+        alignmentErrors.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    std::copy_n(samples, inferenceQuantumSamples,
+                wetTimeline.begin() + static_cast<std::ptrdiff_t>(slot * inferenceQuantumSamples));
+    wetFrameTags[slot] = frame;
+    return true;
+}
+
+bool RaveAudioEngine::publishResultForTesting(const float* const samples,
+                                              const std::size_t count,
+                                              const std::uint64_t frame) noexcept
+{
+    const auto outputFrame = sampleClock >= transportLatencySamples
+        ? (sampleClock - transportLatencySamples) / inferenceQuantumSamples : 0;
+    return commitResult(samples, count, frame, outputFrame);
+}
+
 void RaveAudioEngine::drainResults(const std::uint64_t currentOutputFrame) noexcept
 {
-    // A fixed bound prevents a producer backlog from making callback work
-    // unbounded. Every result carries its immutable input-frame identity.
     for (std::size_t drained = 0; drained < timelineFrameCount; ++drained)
     {
         std::size_t count = 0;
         std::uint64_t frame = 0;
         if (!inferenceWorker.tryReceive(receiveFrame.data(), receiveFrame.size(), count, &frame))
             break;
-        if (count != inferenceQuantumSamples || frame >= submittedFrame)
-        {
-            alignmentErrors.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        if (frame < currentOutputFrame)
-        {
-            lateResults.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
-        if (wetFrameTags[slot] == frame)
-        {
-            alignmentErrors.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        std::copy(receiveFrame.begin(), receiveFrame.end(),
-                  wetTimeline.begin() + static_cast<std::ptrdiff_t>(slot * inferenceQuantumSamples));
-        wetFrameTags[slot] = frame;
+        static_cast<void>(commitResult(receiveFrame.data(), count, frame, currentOutputFrame));
     }
 }
 

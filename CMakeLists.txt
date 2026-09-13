@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(RAVE_USE_SYSTEM_JUCE "Use a JUCE CMake package already installed on the system" ON)
 option(RAVE_ENABLE_LIBTORCH "Build the TorchScript model backend when LibTorch is available" ON)
 
-if(RAVE_USE_SYSTEM_JUCE)
+if(RAVE_USE_SYSTEM_JUCE AND NOT CMAKE_DISABLE_FIND_PACKAGE_JUCE)
     find_package(JUCE CONFIG REQUIRED)
 else()
     include(FetchContent)

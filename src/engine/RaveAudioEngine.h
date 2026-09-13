@@ -125,6 +125,13 @@ public:
     [[nodiscard]] std::uint64_t alignmentErrorCount() const noexcept;
     [[nodiscard]] RuntimeTelemetry runtimeTelemetry() const noexcept;
 
+    // Deterministic, single-threaded test seam. Publishes a worker-shaped
+    // result through the same validation/commit rules without scheduler
+    // timing. Call only while the callback and worker are stopped.
+    [[nodiscard]] bool publishResultForTesting(const float* samples,
+                                               std::size_t sampleCount,
+                                               std::uint64_t frame) noexcept;
+
     // Device-independent lifecycle used by standalone and plugin adapters.
     // Device-lifecycle reprepares are best-effort: on every prepare the
     // installed backend is checked against the new exact configuration before
@@ -182,6 +189,10 @@ private:
     void setLifecycleStateLocked(std::string diagnostic, bool modelUsable);
 
     void drainResults(std::uint64_t currentOutputFrame) noexcept;
+    [[nodiscard]] bool commitResult(const float* samples,
+                                    std::size_t sampleCount,
+                                    std::uint64_t frame,
+                                    std::uint64_t currentOutputFrame) noexcept;
 
     InferenceWorker inferenceWorker;
     static constexpr std::size_t timelineFrameCount = 8;
