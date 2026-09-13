@@ -95,4 +95,21 @@ namespace rave
 
     return noModelText;
 }
+
+[[nodiscard]] inline juce::String contextualLifecycleStatus(
+    const juce::String& eventContext,
+    const RaveAudioEngine::LifecycleStatusSnapshot& snapshot,
+    const juce::String& activeModelName,
+    const juce::String& noModelText)
+{
+    const auto current = lifecycleStatusText(snapshot.diagnostic,
+                                             snapshot.modelUsable,
+                                             snapshot.modelInstalled,
+                                             activeModelName,
+                                             snapshot.latentDimensionCount,
+                                             noModelText);
+    return eventContext.isEmpty()
+        ? current
+        : eventContext + juce::String(juce::CharPointer_UTF8(" — current state: ")) + current;
+}
 } // namespace rave

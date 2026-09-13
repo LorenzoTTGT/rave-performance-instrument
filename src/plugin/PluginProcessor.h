@@ -95,7 +95,10 @@ private:
     std::unique_ptr<rave::BackgroundModelLoader> modelLoader;
 #endif
     mutable juce::CriticalSection modelStateLock;
-    juce::String currentModelStatus { "No model loaded" };
+    // Event text is stored separately from engine truth. When the flag is set,
+    // modelStatus() appends lifecycle state from a fresh coherent snapshot.
+    juce::String currentModelStatus;
+    bool currentStatusNeedsLifecycle = false;
     juce::File pendingModelFile;
     juce::File activeModelFile;
     juce::File queuedRestoreModelFile;

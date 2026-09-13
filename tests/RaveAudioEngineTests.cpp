@@ -1077,6 +1077,22 @@ void testLifecycleStatusFormatterCoversAllStates()
                 == "backend; inner",
             "variable rollback detail is removed without truncating internal semicolons");
 
+    const rave::RaveAudioEngine::LifecycleStatusSnapshot released {
+        7, true, false, {}, 2
+    };
+    const auto failedAfterRelease = rave::contextualLifecycleStatus(
+        "Model load failed: malformed metadata", released, "model.ts", "No model loaded");
+    require(failedAfterRelease.containsIgnoreCase("model load failed")
+                && failedAfterRelease.containsIgnoreCase("installed but not running")
+                && !failedAfterRelease.containsIgnoreCase("active —"),
+            "standalone failed-result presenter uses the captured released state");
+    const rave::RaveAudioEngine::LifecycleStatusSnapshot laterFailure {
+        8, true, false, "later reset failed — bounded dry pass-through", 2
+    };
+    const auto later = rave::contextualLifecycleStatus({}, laterFailure, "model.ts", "No model loaded");
+    require(later.containsIgnoreCase("later reset failed"),
+            "a later standalone timer snapshot supersedes failed-result presentation");
+
     const std::string diagnostic("Model sample rate 48000 Hz does not match the active 44100 Hz "
                                  "configuration; the installed model stays silent — bounded dry "
                                  "pass-through");

@@ -214,9 +214,12 @@ private:
             // Qualification failed, so the previous active model was never
             // replaced and remains playable.
             const auto snapshot = engine.lifecycleStatusSnapshot();
-            status.setText(juce::String("Model load failed: ") + juce::String(result.errorMessage)
-                               + (snapshot.modelUsable ? utf8(" — previous model still active")
-                                                       : juce::String()),
+            lastLifecycleRevision = snapshot.revision;
+            status.setText(rave::contextualLifecycleStatus(
+                               "Model load failed: " + juce::String(result.errorMessage),
+                               snapshot,
+                               {},
+                               utf8("Audio pass-through ready — no model loaded")),
                            juce::dontSendNotification);
             return;
         }

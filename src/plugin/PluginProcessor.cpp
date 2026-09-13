@@ -89,46 +89,23 @@ void RavePluginProcessor::refreshLifecycleStatus()
         return;
     lastSeenLifecycleRevision = snapshot.revision;
 
-    // Shared presenter: renders the recorded diagnostic verbatim (incompatible
-    // reprepare or failing checked reset/start), the active claim when the
-    // model is usable, installed-but-not-running after release/dry fallback,
-    // or the no-model text — never a stale active claim while silent.
-    currentModelStatus = rave::lifecycleStatusText(snapshot.diagnostic,
-                                                   snapshot.modelUsable,
-                                                   snapshot.modelInstalled,
-                                                   activeModelFile.getFileName(),
-                                                   snapshot.latentDimensionCount,
-                                                   "No model loaded");
+    // Engine truth is rendered on demand by modelStatus(); refresh only
+    // publishes that a newer lifecycle revision is observable.
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 
 void RavePluginProcessor::publishModelLoadFailure(const std::string& errorMessage)
 {
-    auto snapshot = engine.lifecycleStatusSnapshot();
+    // Capture the would-be final state before the seam to prove event storage
+    // is independent of it. modelStatus() deliberately ignores this snapshot
+    // and derives engine truth anew for every read.
+    static_cast<void>(engine.lifecycleStatusSnapshot());
     if (failedLoadStatusInterleaveForTesting)
         failedLoadStatusInterleaveForTesting();
 
     const juce::ScopedLock lock(modelStateLock);
-    // The initial snapshot intentionally occurs before the test seam. Once the
-    // status lock is held, refresh at most twice if lifecycle revision moved.
-    // This bounded retry prevents the observed interleave from committing an
-    // older active claim while preserving a candidate qualification failure.
-    for (int attempt = 0; attempt < 2
-         && engine.lifecycleRevision() != snapshot.revision; ++attempt)
-        snapshot = engine.lifecycleStatusSnapshot();
-
-    if (snapshot.revision < lastSeenLifecycleRevision)
-        return;
-
-    const auto current = rave::lifecycleStatusText(snapshot.diagnostic,
-                                                   snapshot.modelUsable,
-                                                   snapshot.modelInstalled,
-                                                   activeModelFile.getFileName(),
-                                                   snapshot.latentDimensionCount,
-                                                   "No model loaded");
-    currentModelStatus = "Model load failed: " + juce::String(errorMessage)
-        + utf8(" — current state: ") + current;
-    lastSeenLifecycleRevision = snapshot.revision;
+    currentModelStatus = "Model load failed: " + juce::String(errorMessage);
+    currentStatusNeedsLifecycle = true;
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 
@@ -276,6 +253,7 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         queuedRestoreLatents = std::move(restoredLatents);
         hasQueuedModelRestore.store(true, std::memory_order_release);
         currentModelStatus = "Restoring " + restoredModel.getFileName() + utf8("…");
+        currentStatusNeedsLifecycle = false;
     }
 
     if (const auto* const messageManager = juce::MessageManager::getInstanceWithoutCreating();
@@ -324,6 +302,7 @@ bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
     {
         const juce::ScopedLock lock(modelStateLock);
         currentModelStatus = "Waiting for the host audio configuration before loading a model";
+        currentStatusNeedsLifecycle = false;
         return false;
     }
 
@@ -335,11 +314,13 @@ bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
     pendingModelFile = modelFile;
     pendingLatentRestore.clear();
     currentModelStatus = "Loading " + modelFile.getFileName() + utf8("…");
+    currentStatusNeedsLifecycle = false;
     return true;
 #else
     static_cast<void>(modelFile);
     const juce::ScopedLock lock(modelStateLock);
     currentModelStatus = "LibTorch backend unavailable";
+    currentStatusNeedsLifecycle = false;
     return false;
 #endif
 }
@@ -382,8 +363,21 @@ bool RavePluginProcessor::finishModelLoadIfReady()
 
 juce::String RavePluginProcessor::modelStatus() const
 {
+    // Same lock order as refresh: modelStateLock, then engine lifecycleMutex.
     const juce::ScopedLock lock(modelStateLock);
-    return currentModelStatus;
+    if (currentModelStatus.isNotEmpty() && !currentStatusNeedsLifecycle)
+        return currentModelStatus;
+
+    const auto snapshot = engine.lifecycleStatusSnapshot();
+    const auto lifecycle = rave::lifecycleStatusText(snapshot.diagnostic,
+                                                      snapshot.modelUsable,
+                                                      snapshot.modelInstalled,
+                                                      activeModelFile.getFileName(),
+                                                      snapshot.latentDimensionCount,
+                                                      "No model loaded");
+    return currentModelStatus.isEmpty()
+        ? lifecycle
+        : currentModelStatus + utf8(" — current state: ") + lifecycle;
 }
 
 bool RavePluginProcessor::isModelLoading() const noexcept
@@ -439,6 +433,7 @@ void RavePluginProcessor::timerCallback()
         const juce::ScopedLock lock(modelStateLock);
         hasQueuedModelRestore.store(false, std::memory_order_release);
         currentModelStatus = "Saved model file is unavailable";
+        currentStatusNeedsLifecycle = false;
         currentModelRevision.fetch_add(1, std::memory_order_release);
         return;
     }
@@ -451,6 +446,7 @@ void RavePluginProcessor::timerCallback()
         const juce::ScopedLock lock(modelStateLock);
         currentModelStatus = "Waiting for the host audio configuration before restoring "
             + modelFile.getFileName();
+        currentStatusNeedsLifecycle = false;
         return;
     }
 
@@ -463,6 +459,7 @@ void RavePluginProcessor::timerCallback()
         queuedRestoreLatents.clear();
         hasQueuedModelRestore.store(false, std::memory_order_release);
         currentModelStatus = "Restoring " + modelFile.getFileName() + utf8("…");
+        currentStatusNeedsLifecycle = false;
     }
 #endif
 }
@@ -535,8 +532,8 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
     if (activated)
     {
         activeModelFile = modelFile;
-        currentModelStatus = modelFile.getFileName() + utf8(" active — ")
-            + juce::String(lifecycleSnapshot.latentDimensionCount) + " latent dimensions";
+        currentModelStatus.clear();
+        currentStatusNeedsLifecycle = false;
     }
     else
     {
@@ -550,9 +547,10 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
         // model retained, no previous model, or rollback failure with bounded
         // dry pass-through) and may contain typographic characters, so build
         // it through the explicit UTF-8 pointer.
-        currentModelStatus = "Model activation failed: "
-            + juce::String(activationFailure.empty() ? "candidate was not accepted"
-                                                     : utf8(activationFailure.c_str()));
+        const auto cause = rave::candidateFailureCause(
+            activationFailure.empty() ? "candidate was not accepted" : activationFailure);
+        currentModelStatus = "Model activation failed: " + utf8(cause.c_str());
+        currentStatusNeedsLifecycle = true;
     }
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
