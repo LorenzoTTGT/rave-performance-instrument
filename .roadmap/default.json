@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 2,
-    "revision": 3,
+    "revision": 10,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -22,7 +22,27 @@
         },
         "generation": 1,
         "work": "implemented",
-        "receipts": {}
+        "receipts": {
+          "verified": {
+            "generation": 1,
+            "commit": "34793d5cd48261cb2826e465d753624d484c5848",
+            "evidence": "Qualification contract reviewed in docs/QUALIFICATION.md. LibTorch build registered 7 tests and ctest passed 7/7; no-LibTorch build registered 5 tests and passed 5/5. Toolchain, hardware, host matrix, model provenance/hashes, thresholds, parameter IDs and evidence format recorded.",
+            "recordedAt": "2026-09-12T19:59:03.044Z"
+          },
+          "committed": {
+            "generation": 1,
+            "commit": "34793d5cd48261cb2826e465d753624d484c5848",
+            "evidence": "Commit contains docs/QUALIFICATION.md, completed RAVE-01 checklist items, updated portable roadmap snapshot, and qualification-model ignore rule; committed working tree was checked with git diff --cached --check.",
+            "recordedAt": "2026-09-12T19:59:09.286Z"
+          },
+          "pushed": {
+            "generation": 1,
+            "commit": "34793d5cd48261cb2826e465d753624d484c5848",
+            "evidence": "Verified origin/main resolves to 34793d5cd48261cb2826e465d753624d484c5848 after push.",
+            "recordedAt": "2026-09-12T19:59:23.596Z",
+            "reference": "origin/main"
+          }
+        }
       },
       {
         "id": "rave-02-model-lifecycle",
@@ -45,7 +65,7 @@
           "branch": "main"
         },
         "generation": 1,
-        "work": "todo",
+        "work": "implemented",
         "receipts": {}
       },
       {
@@ -118,8 +138,37 @@
           {
             "id": "rave-04-controls-recall",
             "through": "verified"
+          },
+          {
+            "id": "rave-06-official-icon",
+            "through": "verified"
           }
         ],
+        "deliverThrough": "pushed",
+        "target": {
+          "remote": "origin",
+          "branch": "main"
+        },
+        "generation": 2,
+        "work": "todo",
+        "receipts": {},
+        "reset": {
+          "reason": "Require official RAVE icon integration to be verified before final application and plugin qualification.",
+          "source": "rave-05-qualification",
+          "recordedAt": "2026-09-12T20:00:18.630Z"
+        }
+      },
+      {
+        "id": "rave-06-official-icon",
+        "title": "Official RAVE icon integration",
+        "acceptance": [
+          "Record the authoritative source and permitted use of the official RAVE icon",
+          "Generate platform and HiDPI assets without distortion or unintended artwork changes",
+          "Display the icon consistently in the plugin interface and standalone application",
+          "Include icon resources and metadata in standalone, VST3 and AU artifacts where supported",
+          "Verify packaged resources and representative display scales"
+        ],
+        "dependsOn": [],
         "deliverThrough": "pushed",
         "target": {
           "remote": "origin",
@@ -130,11 +179,13 @@
         "receipts": {}
       }
     ],
-    "updatedAt": "2026-09-12T19:58:02.681Z",
+    "updatedAt": "2026-09-13T03:20:50.981Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "80f5d91eb99f45c00e3a84cd1aaf361cf75083effbdad7293282d966d846477f",
+    "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143"
+  "hash": "07d745b5ac4366294cb4cb5e7129e59a90c1818b7b8557acd0e4ad2f4481f720"
 }

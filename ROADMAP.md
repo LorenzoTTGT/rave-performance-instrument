@@ -52,7 +52,7 @@ Define what “dependable instrument” means before optimizing implementation.
 Depends on: RAVE-01 verified.
 
 - [x] Warm up and validate candidate models off the audio callback at the intended runtime configuration before reporting them active.
-- [ ] Confirm streaming/reset behavior with selected real RAVE exports (requires the licensed local fixtures recorded in `docs/QUALIFICATION.md`).
+- [x] Confirm streaming/reset behavior with the SHA-256-verified `birds_pluma_b2048_r48000_z12.ts` local qualification fixture at 48 kHz/2048 samples.
 - [x] Reject unsupported sample rates clearly before activation, or add measured resampling with explicit latency.
 - [x] Keep the previous working model active when candidate qualification fails.
 - [x] Reject malformed metadata, non-finite output, unexpected shapes, and backend exceptions with bounded dry fallback.
@@ -110,9 +110,19 @@ ctest --test-dir build -R 'rave_plugin(_model_recall)?_tests' --output-on-failur
 
 Add shared-state/standalone tests for restore-before-prepare, reprepare, missing files, superseded loads, unsupported versions, and larger latent vectors.
 
+### RAVE-06 — Official RAVE icon integration
+
+- [ ] Source the official RAVE icon from an authoritative project asset and record its provenance and permitted use.
+- [ ] Generate the required platform and HiDPI sizes from the official artwork without distortion or unintended modification.
+- [ ] Display the icon consistently in the plugin interface and standalone application.
+- [ ] Include the icon in standalone and plugin bundle resources and metadata where the target format supports it.
+- [ ] Verify the icon at representative scales and in built standalone, VST3, and AU artifacts.
+
+**Focused checks:** build the standalone, VST3, and AU targets; inspect packaged resources and verify the icon in both application interfaces.
+
 ### RAVE-05 — Real-model and host qualification
 
-Depends on: RAVE-03 and RAVE-04 verified.
+Depends on: RAVE-03, RAVE-04, and RAVE-06 verified.
 
 - [ ] Benchmark selected real RAVE models on the target Mac under representative concurrent audio load.
 - [ ] Record callback and inference timing distributions, latency, CPU, memory, queue drops, deadline misses, and processing errors against RAVE-01 thresholds.
