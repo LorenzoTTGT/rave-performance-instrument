@@ -581,32 +581,53 @@ void testControlledWorkerDeadlineIntegration()
     overloaded.setModelBackend(overloadedBackend);
     overloaded.prepare(48000.0, 2048, 1);
     overloaded.setDryWet(1.0f);
-    overloaded.processAudio(inputs, 1, outputs, 1, 2048);
-    requireEventually([&] { return overloadedBackend->entered.load(std::memory_order_acquire); }, "overload backend entered worker");
-    for (int frame = 0; frame < 5; ++frame)
+    std::vector<float> distinctInput(2048), distinctOutput(2048);
+    const float* distinctInputs[] { distinctInput.data() };
+    float* distinctOutputs[] { distinctOutput.data() };
+    const auto processFrame = [&](const float value) {
+        std::fill(distinctInput.begin(), distinctInput.end(), value);
+        overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 2048);
+    };
+
+    processFrame(10.0f); // frame 0 is blocked in-flight
+    requireEventually([&] { return overloadedBackend->entered.load(std::memory_order_acquire); },
+                      "overload backend entered worker");
+    for (int frame = 1; frame <= 5; ++frame)
     {
-        overloaded.processAudio(inputs, 1, outputs, 1, 2048);
-        if (frame >= 1)
-            require(std::abs(output[500] - 1.0f) < 0.0001f,
-                    "each saturated committed slot renders exact delayed dry");
+        processFrame(10.0f + static_cast<float>(frame));
+        if (frame >= 2)
+            require(std::abs(distinctOutput[500] - (8.0f + static_cast<float>(frame))) < 0.0001f,
+                    "saturated playback slot renders its distinct aligned delayed dry frame");
     }
-    require(overloaded.runtimeTelemetry().queueDrops > 0,
-            "controlled worker saturation is reported without shifting the timeline");
+    require(overloaded.runtimeTelemetry().queueDrops == 1,
+            "one blocked input plus four queued inputs drops exactly the sixth frame");
+
     overloadedBackend->release.store(true, std::memory_order_release);
-    requireEventually([&] { return overloadedBackend->completedCount.load(std::memory_order_acquire) >= 2; },
-                      "overload backend drains queued work");
-    const auto acceptedBeforeRecovery = 6u - overloaded.runtimeTelemetry().queueDrops;
-    overloaded.processAudio(inputs, 1, outputs, 1, 2048);
+    requireEventually([&] {
+        return overloadedBackend->completedCount.load(std::memory_order_acquire) == 5;
+    }, "exactly five pre-recovery backend frames complete");
+
+    const auto preRecoveryCompletions = overloadedBackend->completedCount.load(std::memory_order_acquire);
+    processFrame(99.0f); // frame 6; D(5) drains and frees the output queue first
+    require(std::abs(distinctOutput[500] - 14.0f) < 0.0001f,
+            "complete missed frame 4 renders its exact delayed dry value");
     requireEventually([&] {
         return overloadedBackend->completedCount.load(std::memory_order_acquire)
-            >= static_cast<int>(acceptedBeforeRecovery + 1u);
-    }, "overload backend processes the distinct recovery frame");
-    overloaded.processAudio(inputs, 1, outputs, 1, 2048);
-    overloaded.processAudio(inputs, 1, outputs, 1, 512);
-    require(output[500] > 1.9f,
-            "recovered current frame renders wet only at its own playback slot");
-    require(overloaded.runtimeTelemetry().deadlineMisses > 0,
-            "overload commits aligned dry misses permanently before recovery");
+            == preRecoveryCompletions + 1;
+    }, "unique recovery frame completes after output queue space is freed");
+
+    std::fill(distinctInput.begin(), distinctInput.end(), 100.0f);
+    overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 1808);
+    require(std::abs(distinctOutput[500] - 15.0f) < 0.0001f,
+            "missed frame 5 starts with its exact delayed dry value");
+    overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 240);
+    require(std::abs(distinctOutput[239] - 15.0f) < 0.0001f,
+            "complete missed frame 5 remains exact delayed dry through playback end");
+    overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 512);
+    require(std::abs(distinctOutput[240] - 198.0f) < 0.0001f,
+            "unique recovered wet value reaches unity only in frame 6 at P(6)+F");
+    require(overloaded.runtimeTelemetry().deadlineMisses >= 6,
+            "saturated and stale frames commit as deadline misses without replay");
     overloaded.release();
 }
 

@@ -24,6 +24,15 @@ void require(const bool condition, const char* const message)
     }
 }
 
+template <typename Predicate>
+void requireEventually(Predicate predicate, const char* const message)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!predicate() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    require(predicate(), message);
+}
+
 class GainBackend final : public rave::ModelBackend
 {
 public:
@@ -71,8 +80,12 @@ public:
                  const std::span<float> output) override
     {
         entered.store(true, std::memory_order_release);
-        while (!proceed.load(std::memory_order_acquire))
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!proceed.load(std::memory_order_acquire)
+               && std::chrono::steady_clock::now() < deadline)
             std::this_thread::yield();
+        if (!proceed.load(std::memory_order_acquire))
+            return false;
         std::copy(input.begin(), input.end(), output.begin());
         return true;
     }
@@ -278,8 +291,8 @@ void testQueueSaturationIsBoundedAndCounted()
     require(worker.start(), "saturation worker starts");
     const std::array<float, 4> input { 1, 2, 3, 4 };
     require(worker.trySubmit(input.data(), input.size(), 1), "blocking frame submitted");
-    while (!backend->entered.load(std::memory_order_acquire))
-        std::this_thread::yield();
+    requireEventually([&] { return backend->entered.load(std::memory_order_acquire); },
+                      "blocking backend entered worker before saturation");
     require(worker.trySubmit(input.data(), input.size(), 2), "single queued frame accepted");
     require(!worker.trySubmit(input.data(), input.size(), 3), "saturated queue rejects without waiting");
     require(worker.droppedInputBlockCount() == 1, "saturated input drop counted exactly");

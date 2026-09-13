@@ -124,9 +124,8 @@ The repository currently provides:
 
 Latent dimensions beyond the eight macros remain UI controls rather than dynamic
 host parameters because DAWs expect a stable parameter list. Saved model paths
-must remain available on the same machine. Smooth fallback fades, portable model
-identity resolution, standalone preset/MIDI learn, and reported host latency are
-not implemented yet.
+must remain available on the same machine. Portable model identity resolution
+and standalone preset/MIDI learn are not implemented yet.
 
 ## Building
 
