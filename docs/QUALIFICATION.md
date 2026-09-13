@@ -56,7 +56,7 @@ The model repository declares CC BY-NC 4.0. These files are approved here only a
 - Stereo host layout: stereo dry path; channel 1 feeds the mono model; processed mono is duplicated into both wet outputs.
 - Primary sample rate: 48,000 Hz.
 - A model whose exported sample rate differs from the active device/host rate must be rejected before activation until measured resampling exists.
-- Required streaming model methods and metadata are `forward`; optional latent operation requires compatible `encode`, `decode`, `forward_params`, `encode_params`, and `decode_params`.
+- Required streaming model methods and metadata are `forward`; optional latent operation requires compatible `encode`, `decode`, `forward_params`, `encode_params`, and `decode_params`. A declared sample rate is read from the `get_sample_rate` method or, when it is absent, the `sampling_rate` integer buffer used by nn~/RAVE exports. Present metadata must be strictly valid: malformed buffers (non-tensor, fractional or wrong dtype, wrong rank, non-positive values) and invalid declared rates reject the candidate instead of degrading silently. The `sampling_rate` buffer must be a scalar or a single-element 1-D buffer; other ranks or shapes (for example a rank-2 singleton) are rejected.
 
 ### Model activation and lifecycle
 
@@ -68,11 +68,13 @@ The model repository declares CC BY-NC 4.0. These files are approved here only a
   is rejected before activation with an actionable message that names both
   rates; incompatible rates are never activated silently.
 - Warm-up must produce correctly sized, finite output on the exact runtime
-  processing path. Malformed metadata buffers, unexpected output shapes,
-  processing failures, and thrown backend exceptions fail qualification.
-- A failed qualification or activation keeps the previous usable model active
-  and reports the failure through the visible status surface. With no previous
-  model, the engine remains in bounded dry pass-through.
+  processing path, and the model's reset must succeed. Malformed metadata
+  buffers, unexpected output shapes, reset failures, processing failures, and
+  thrown backend exceptions fail qualification.
+- Activation rechecks every candidate against the exact known host configuration under lifecycle ownership, so a prepare or sample-rate change after background qualification cannot install an incompatible candidate over the previous usable model. One lifecycle ownership mutex protects every non-audio lifecycle mutation (prepare, release, replacement) and the configuration snapshot itself; the audio callback never takes it and stays lock-free, reading only single atomic copies published under the mutex. Model loading and queued restores are deferred until a real host/device configuration exists; defaults are never invented. The known configuration survives release and callback detachment. Deterministic lifecycle tests instrument the prepare-side lock-acquisition boundary and coordinate with a latch so a concurrent prepare is provably pending on serialization before activation commits.
+- Activation reports success only when the candidate's checked reset and worker start succeeded under the exact snapshot — whenever a configuration is known, activation prepares, checked-resets, and starts the candidate, even after release or a previous rollback failure. If the candidate's reset refuses at activation time (for example it reset cleanly during qualification but not afterwards), the candidate is rejected, the previous backend and all of its latent control values are restored, and its restart is verified before retention is claimed.
+- Loaded and usable are tracked separately. Every prepare verifies the installed backend against the new exact configuration before starting; an incompatible reprepare or failing reset keeps the model installed but reports it as not usable and renders bounded dry pass-through until a compatible configuration returns. The engine retains a thread-safe lifecycle diagnostic plus revision counter for these transitions — including release/device stop — and the plugin and standalone status surfaces render the shared lifecycle presenter's truthful text (failure diagnostic, active claim, installed-but-not-running, or no model), never a stale active claim while silent. Backend prepare, checked reset, and worker thread-start failures are contained, recorded, and never escape host or device prepare paths. When a rollback abandons a backend, the engine latent count and worker latent storage are cleared together with the installed flag, so no model means zero latents, and the plugin drops the serialized model identity so no dead path is restored. The standalone app derives its immediate post-reattach status from the current engine state through the same shared presenter and synchronizes the observed lifecycle revision.
+- A failed qualification or activation reports its truthful outcome through the visible status surface: the previous usable model retained (with all latent control values restored), no previous model (bounded dry pass-through), or a rollback that could not restart the previous model (bounded dry pass-through, previous model not claimed as retained, with a later healthy replacement still activatable).
 - Non-finite runtime output from an already active model is dropped as a
   processing error so the engine falls back to dry audio instead of emitting it.
 - Repeated model replacement, prepare/release cycles, editor closure, and

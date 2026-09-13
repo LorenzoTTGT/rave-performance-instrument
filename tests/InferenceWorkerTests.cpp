@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <span>
@@ -33,7 +34,7 @@ public:
         maximumBlockSize = newMaximumBlockSize;
     }
 
-    void reset() noexcept override { resetCalled.store(true); }
+    bool reset(std::string&) override { resetCalled.store(true); return true; }
     std::size_t latentDimensionCount() const noexcept override { return 2; }
 
     bool process(const std::span<const float> input,
@@ -62,7 +63,7 @@ class ThrowingBackend final : public rave::ModelBackend
 public:
     bool load(const std::string&, std::string&) override { return true; }
     void prepare(double, std::size_t) override {}
-    void reset() noexcept override {}
+    bool reset(std::string&) override { return true; }
     std::size_t latentDimensionCount() const noexcept override { return 0; }
 
     bool process(const std::span<const float>,
@@ -73,12 +74,36 @@ public:
     }
 };
 
+class FailingResetBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+
+    bool reset(std::string& errorMessage) override
+    {
+        errorMessage = "state unrecoverable";
+        return false;
+    }
+
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+
+    bool process(const std::span<const float> input,
+                 const std::span<const float>,
+                 const std::span<float> output) override
+    {
+        for (std::size_t index = 0; index < input.size(); ++index)
+            output[index] = input[index];
+        return true;
+    }
+};
+
 class NonFiniteBackend final : public rave::ModelBackend
 {
 public:
     bool load(const std::string&, std::string&) override { return true; }
     void prepare(double, std::size_t) override {}
-    void reset() noexcept override {}
+    bool reset(std::string&) override { return true; }
     std::size_t latentDimensionCount() const noexcept override { return 0; }
 
     bool process(const std::span<const float> input,
@@ -270,9 +295,49 @@ void testRepeatedPrepareStartStopAndReplacementRemainsBounded()
 }
 } // namespace
 
+void testStartReportsResetFailureDiagnostic()
+{
+    auto backend = std::make_shared<FailingResetBackend>();
+    rave::InferenceWorker worker;
+    worker.setBackend(backend);
+    worker.prepare(48000.0, 8, 2);
+
+    std::string startError;
+    require(!worker.start(&startError), "worker start fails when the backend reset fails");
+    require(!worker.isRunning(), "failed start leaves the worker stopped");
+    require(startError.find("model reset failed") != std::string::npos
+                && startError.find("state unrecoverable") != std::string::npos,
+            "start diagnostic propagates the backend reset error");
+}
+
+void testThreadStartFailureIsContained()
+{
+    auto backend = std::make_shared<GainBackend>();
+    rave::InferenceWorker worker;
+    worker.setBackend(backend);
+    worker.prepare(48000.0, 8, 2);
+
+    // The test-only hook throws where std::thread would be constructed, so
+    // thread-start failure containment is exercised deterministically.
+    worker.threadStartHookForTesting = [] { throw std::runtime_error("no thread resources"); };
+    std::string startError;
+    require(!worker.start(&startError), "worker start fails when the thread cannot start");
+    require(!worker.isRunning(), "failed thread start leaves the worker stopped");
+    require(startError.find("worker thread could not start") != std::string::npos
+                && startError.find("no thread resources") != std::string::npos,
+            "thread-start failure diagnostic is actionable");
+    worker.threadStartHookForTesting = nullptr;
+
+    require(worker.start(), "worker starts once the thread-start failure is cleared");
+    require(worker.isRunning(), "worker running after recovery");
+    worker.stop();
+}
+
 int main()
 {
     testLifecycleAndProcessing();
+    testStartReportsResetFailureDiagnostic();
+    testThreadStartFailureIsContained();
     testProcessingErrorsAreCounted();
     testThrowingBackendIsCountedSafely();
     testNonFiniteOutputIsDropped();

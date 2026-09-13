@@ -8,12 +8,13 @@
 namespace rave
 {
 // Device configuration a candidate model must be qualified against before it
-// may be reported active. The defaults match the documented primary milestone
-// configuration (48 kHz) and are used when no device has been prepared yet.
+// may be reported active. A non-positive sample rate or zero block size means
+// "not configured yet": no real host/device configuration has been observed,
+// and neither qualification nor activation may run against invented defaults.
 struct ModelRuntimeConfiguration
 {
-    double sampleRate = 48000.0;
-    std::size_t maximumBlockSize = 512;
+    double sampleRate = 0.0;
+    std::size_t maximumBlockSize = 0;
 };
 
 class ModelBackend
@@ -23,7 +24,11 @@ public:
 
     virtual bool load(const std::string& modelPath, std::string& errorMessage) = 0;
     virtual void prepare(double sampleRate, std::size_t maximumBlockSize) = 0;
-    virtual void reset() noexcept = 0;
+
+    // Resets streaming state before first use. Returns false with a diagnostic
+    // when the model's reset cannot be performed; such candidates must fail
+    // qualification instead of becoming active with stale or unknown state.
+    virtual bool reset(std::string& errorMessage) = 0;
 
     [[nodiscard]] virtual std::size_t latentDimensionCount() const noexcept = 0;
 
@@ -34,7 +39,8 @@ public:
 
     // Returns false when the model cannot run at the intended device
     // configuration, for example an exported sample rate mismatch. Called
-    // during off-audio-thread candidate qualification, never in the callback.
+    // during off-audio-thread candidate qualification and again under
+    // activation ownership before a candidate replaces the active model.
     [[nodiscard]] virtual bool supportsConfiguration(double sampleRate, std::size_t) const noexcept
     {
         return sampleRate > 0.0;

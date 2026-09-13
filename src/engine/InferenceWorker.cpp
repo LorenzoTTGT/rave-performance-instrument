@@ -4,6 +4,7 @@
 #include <cmath>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace rave
@@ -19,6 +20,17 @@ void InferenceWorker::setBackend(ModelBackendPtr newBackend)
         throw std::logic_error("Cannot replace an inference backend while the worker is running");
 
     backend = std::move(newBackend);
+
+    // Keep latent storage in sync with the installed backend. Abandoning a
+    // backend (nullptr) must clear the count, atomics, and snapshot so no
+    // stale latent values survive a rollback failure or explicit clear.
+    latentControlCount = backend != nullptr ? backend->latentDimensionCount() : 0;
+    latentControlValues = latentControlCount > 0
+        ? std::make_unique<std::atomic<float>[]>(latentControlCount)
+        : nullptr;
+    latentControlSnapshot.assign(latentControlCount, 0.0f);
+    for (std::size_t index = 0; index < latentControlCount; ++index)
+        latentControlValues[index].store(0.0f, std::memory_order_relaxed);
 }
 
 void InferenceWorker::prepare(const double sampleRate,
@@ -34,13 +46,7 @@ void InferenceWorker::prepare(const double sampleRate,
     outputQueue.prepare(1, maximumSamplesPerBlock, queueCapacity);
     inputBuffer.assign(maximumSamplesPerBlock, 0.0f);
     outputBuffer.assign(maximumSamplesPerBlock, 0.0f);
-    latentControlCount = backend != nullptr ? backend->latentDimensionCount() : 0;
-    latentControlValues = latentControlCount > 0
-        ? std::make_unique<std::atomic<float>[]>(latentControlCount)
-        : nullptr;
-    latentControlSnapshot.assign(latentControlCount, 0.0f);
-    for (std::size_t index = 0; index < latentControlCount; ++index)
-        latentControlValues[index].store(0.0f, std::memory_order_relaxed);
+    // Latent storage/count is kept in sync by setBackend().
 
     droppedInputs.store(0, std::memory_order_relaxed);
     droppedOutputs.store(0, std::memory_order_relaxed);
@@ -51,17 +57,74 @@ void InferenceWorker::prepare(const double sampleRate,
         backend->prepare(sampleRate, maximumSamplesPerBlock);
 }
 
-bool InferenceWorker::start()
+bool InferenceWorker::start(std::string* const startError)
 {
+    if (startError != nullptr)
+        startError->clear();
+
     if (isRunning() || backend == nullptr || inputBuffer.empty())
+    {
+        if (startError != nullptr)
+            *startError = "inference worker is not ready to start";
         return false;
+    }
 
     inputQueue.reset();
     outputQueue.reset();
-    backend->reset();
+    // A misbehaving backend whose reset throws (violating the checked-reset
+    // contract) must be contained here just like a false return.
+    std::string resetError;
+    auto resetSucceeded = false;
+    try
+    {
+        resetSucceeded = backend->reset(resetError);
+    }
+    catch (const std::exception& exception)
+    {
+        resetError = exception.what();
+    }
+    catch (...)
+    {
+        resetError = "unknown reset exception";
+    }
+    if (!resetSucceeded)
+    {
+        // A backend whose reset fails must never run with unknown state; the
+        // caller decides between verified rollback and bounded dry audio.
+        if (startError != nullptr)
+            *startError = resetError.empty()
+                ? std::string("model reset failed")
+                : "model reset failed: " + resetError;
+        return false;
+    }
     stopRequested.store(false, std::memory_order_release);
     running.store(true, std::memory_order_release);
-    thread = std::thread([this] { run(); });
+    try
+    {
+        // Test-only seam fired just before the thread is constructed so tests
+        // can exercise thread-start failure containment deterministically.
+        if (threadStartHookForTesting != nullptr)
+            threadStartHookForTesting();
+        thread = std::thread([this] { run(); });
+    }
+    catch (const std::exception& exception)
+    {
+        // std::thread construction and any injected hook failure must never
+        // escape the start path; the caller rolls back or falls back to dry.
+        running.store(false, std::memory_order_release);
+        stopRequested.store(true, std::memory_order_release);
+        if (startError != nullptr)
+            *startError = std::string("worker thread could not start: ") + exception.what();
+        return false;
+    }
+    catch (...)
+    {
+        running.store(false, std::memory_order_release);
+        stopRequested.store(true, std::memory_order_release);
+        if (startError != nullptr)
+            *startError = "worker thread could not start";
+        return false;
+    }
     return true;
 }
 

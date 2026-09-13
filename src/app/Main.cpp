@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 
+#include "engine/LifecycleStatusText.h"
 #include "engine/RaveAudioEngine.h"
 
 #if RAVE_HAS_LIBTORCH
@@ -9,6 +10,13 @@
 
 namespace
 {
+// juce::String(const char*) rejects non-ASCII literals, so every string that
+// contains typographic characters is built through an explicit UTF-8 pointer.
+[[nodiscard]] juce::String utf8(const char* const text)
+{
+    return juce::String(juce::CharPointer_UTF8(text));
+}
+
 class MainComponent final : public juce::Component,
                             private juce::Timer
 {
@@ -20,7 +28,7 @@ public:
         title.setFont(juce::Font(24.0f, juce::Font::bold));
         addAndMakeVisible(title);
 
-        status.setText("Audio pass-through ready — no model loaded", juce::dontSendNotification);
+        status.setText(utf8("Audio pass-through ready — no model loaded"), juce::dontSendNotification);
         status.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(status);
 
@@ -42,7 +50,7 @@ public:
         modelLoader = std::make_unique<rave::BackgroundModelLoader>([] {
             return std::make_shared<rave::TorchScriptBackend>();
         });
-        loadModelButton.setButtonText("Load TorchScript Model…");
+        loadModelButton.setButtonText(utf8("Load TorchScript Model…"));
         loadModelButton.onClick = [this] { chooseModel(); };
         addAndMakeVisible(loadModelButton);
         startTimerHz(10);
@@ -148,19 +156,52 @@ private:
                                      if (!file.existsAsFile())
                                          return;
 
+                                     // Defer until a real device configuration
+                                     // exists; never qualify against defaults.
+                                     const auto configuration
+                                         = safeThis->engine.runtimeConfiguration();
+                                     if (configuration.sampleRate <= 0.0
+                                         || configuration.maximumBlockSize == 0)
+                                     {
+                                         safeThis->status.setText(
+                                             utf8("Audio device not ready — model loading is deferred"),
+                                             juce::dontSendNotification);
+                                         return;
+                                     }
+
                                      if (safeThis->modelLoader->start(
-                                             file.getFullPathName().toStdString(),
-                                             safeThis->engine.runtimeConfiguration()))
+                                             file.getFullPathName().toStdString(), configuration))
                                      {
                                          safeThis->loadModelButton.setEnabled(false);
-                                         safeThis->status.setText("Loading " + file.getFileName() + "…",
+                                         safeThis->status.setText("Loading " + file.getFileName() + utf8("…"),
                                                                   juce::dontSendNotification);
                                      }
                                  });
     }
 
+    // Surfaces engine lifecycle transitions (incompatible reprepare, failing
+    // checked reset/start, release/device stop) in the visible status via the
+    // shared presenter — never a stale active claim while the model is
+    // silent. Runs on the timer (message thread).
+    void refreshLifecycleStatus()
+    {
+        const auto revision = engine.lifecycleRevision();
+        if (revision == lastLifecycleRevision)
+            return;
+        lastLifecycleRevision = revision;
+
+        status.setText(rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
+                                                 engine.hasUsableModel(),
+                                                 engine.hasModelBackend(),
+                                                 {},
+                                                 engine.latentDimensionCount(),
+                                                 utf8("Audio pass-through ready — no model loaded")),
+                       juce::dontSendNotification);
+    }
+
     void timerCallback() override
     {
+        refreshLifecycleStatus();
         const auto loaderState = modelLoader->state();
         if (loaderState != rave::BackgroundModelLoader::State::succeeded
             && loaderState != rave::BackgroundModelLoader::State::failed)
@@ -173,7 +214,8 @@ private:
             // Qualification failed, so the previous active model was never
             // replaced and remains playable.
             status.setText(juce::String("Model load failed: ") + juce::String(result.errorMessage)
-                               + (engine.hasModelBackend() ? " — previous model still active" : ""),
+                               + (engine.hasUsableModel() ? utf8(" — previous model still active")
+                                                           : juce::String()),
                            juce::dontSendNotification);
             return;
         }
@@ -181,39 +223,56 @@ private:
         // Detaching the audio callback before activation keeps every join and
         // preparation step off the audio thread.
         deviceManager.removeAudioCallback(&engine);
-        juce::String activationError;
+        std::string activationFailure;
+        bool activated = false;
         try
         {
-            if (!engine.activateModelBackend(std::move(result.backend)))
-                activationError = "candidate was not accepted";
+            activated = engine.activateModelBackend(std::move(result.backend), &activationFailure);
         }
         catch (const std::exception& exception)
         {
-            activationError = exception.what();
+            activationFailure = exception.what();
         }
         catch (...)
         {
-            activationError = "unknown activation error";
+            activationFailure = "unknown activation error";
         }
         deviceManager.addAudioCallback(&engine);
 
-        if (activationError.isNotEmpty())
+        if (!activated)
         {
-            status.setText("Model activation failed: " + activationError
-                               + (engine.hasModelBackend()
-                                      ? " — previous model still active"
-                                      : ""),
+            // Derive the current model/usability state from the post-reattach
+            // engine lifecycle, and keep the candidate failure cause only as
+            // labelled context so it never overrides the live active/dry state.
+            lastLifecycleRevision = engine.lifecycleRevision();
+            const auto current = rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
+                                                           engine.hasUsableModel(),
+                                                           engine.hasModelBackend(),
+                                                           {},
+                                                           engine.latentDimensionCount(),
+                                                           utf8("Audio pass-through ready — no model loaded"));
+            status.setText(juce::String("Model activation failed: ")
+                               + utf8(activationFailure.c_str())
+                               + juce::String(juce::CharPointer_UTF8(" — current state: "))
+                               + current,
                            juce::dontSendNotification);
             return;
         }
 
         rebuildLatentControls(engine.latentDimensionCount());
-        const auto latentCount = engine.latentDimensionCount();
-        status.setText(
-            latentCount > 0
-                ? "Model active — " + juce::String(latentCount) + " latent dimensions"
-                : "Model active — no compatible latent metadata",
-            juce::dontSendNotification);
+        // Reattaching ran a full prepare; derive the immediate status from the
+        // CURRENT engine state via the shared presenter, so a failing checked
+        // reset/start or incompatibility at reattachment renders as such —
+        // never an unconditional active claim from the pre-reattach result.
+        // Sync the observed revision so the next poll does not rewrite it.
+        lastLifecycleRevision = engine.lifecycleRevision();
+        status.setText(rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
+                                                 engine.hasUsableModel(),
+                                                 engine.hasModelBackend(),
+                                                 {},
+                                                 engine.latentDimensionCount(),
+                                                 utf8("Audio pass-through ready — no model loaded")),
+                       juce::dontSendNotification);
     }
 #else
     void timerCallback() override {}
@@ -232,6 +291,7 @@ private:
     std::vector<std::unique_ptr<juce::Slider>> latentSliders;
     std::unique_ptr<juce::FileChooser> fileChooser;
 #if RAVE_HAS_LIBTORCH
+    std::uint64_t lastLifecycleRevision = 0;
     std::unique_ptr<rave::BackgroundModelLoader> modelLoader;
 #endif
 };

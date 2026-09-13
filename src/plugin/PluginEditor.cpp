@@ -4,6 +4,16 @@
 
 #include <algorithm>
 
+namespace
+{
+// juce::String(const char*) rejects non-ASCII literals, so strings containing
+// typographic characters are built through an explicit UTF-8 pointer.
+[[nodiscard]] juce::String utf8(const char* const text)
+{
+    return juce::String(juce::CharPointer_UTF8(text));
+}
+} // namespace
+
 RavePluginEditor::RavePluginEditor(RavePluginProcessor& owner)
     : AudioProcessorEditor(owner), ownerProcessor(owner)
 {
@@ -17,7 +27,7 @@ RavePluginEditor::RavePluginEditor(RavePluginProcessor& owner)
     addAndMakeVisible(status);
 
 #if RAVE_HAS_LIBTORCH
-    loadModelButton.setButtonText("Load TorchScript Model…");
+    loadModelButton.setButtonText(utf8("Load TorchScript Model…"));
     loadModelButton.setEnabled(!ownerProcessor.isModelLoading());
     loadModelButton.onClick = [this] { chooseModel(); };
 #else
@@ -181,7 +191,7 @@ void RavePluginEditor::updateMidiLearnLabels()
 {
     const auto buttonText = [this](const std::size_t target) {
         if (ownerProcessor.isLearningMidiTarget(target))
-            return juce::String("Move CC…");
+            return utf8("Move CC…");
         const auto controller = ownerProcessor.midiControllerForTarget(target);
         return controller >= 0 ? "CC " + juce::String(controller) : juce::String("MIDI Learn");
     };

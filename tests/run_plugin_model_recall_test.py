@@ -37,7 +37,17 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         model_path = pathlib.Path(directory) / "recall-model.ts"
         torch.jit.script(RaveLikeModel().eval()).save(str(model_path))
-        return subprocess.run([sys.argv[1], str(model_path)], check=False).returncode
+        # Capture the child output so any JUCE assertion - including ones fired
+        # inside the plugin target's own compilation units - fails the test.
+        completed = subprocess.run(
+            [sys.argv[1], str(model_path)], check=False, capture_output=True, text=True
+        )
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        if "JUCE Assertion" in completed.stdout or "JUCE Assertion" in completed.stderr:
+            print("FAILED: JUCE assertion fired during the plugin test", file=sys.stderr)
+            return 1
+        return completed.returncode
 
 
 if __name__ == "__main__":

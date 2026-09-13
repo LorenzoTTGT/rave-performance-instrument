@@ -50,6 +50,13 @@ public:
         throwUnknown
     };
 
+    enum class ResetBehavior
+    {
+        succeed,
+        fail,
+        throwStd
+    };
+
     QualifiedTestBackend(std::shared_ptr<BackendLog> newLog,
                          const int newDeclaredSampleRate = -1,
                          const ProcessBehavior newBehavior = ProcessBehavior::succeed)
@@ -79,10 +86,21 @@ public:
             throw std::runtime_error("prepare exploded");
     }
 
-    void reset() noexcept override
+    bool reset(std::string& errorMessage) override
     {
         ++log->resetCalls;
         log->resetOrder = ++orderCounter;
+        switch (resetBehavior)
+        {
+        case ResetBehavior::fail:
+            errorMessage = "reset refused";
+            return false;
+        case ResetBehavior::throwStd:
+            throw std::runtime_error("reset exploded");
+        case ResetBehavior::succeed:
+            return true;
+        }
+        return true;
     }
 
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept override { return 0; }
@@ -133,6 +151,7 @@ public:
     std::shared_ptr<BackendLog> log;
     int declaredSampleRate = -1;
     ProcessBehavior behavior = ProcessBehavior::succeed;
+    ResetBehavior resetBehavior = ResetBehavior::succeed;
     bool throwOnPrepare = false;
     int orderCounter = 0;
 };
@@ -247,6 +266,7 @@ void testWarmUpFailuresProduceDiagnostics()
         const char* name;
         QualifiedTestBackend::ProcessBehavior behavior;
         bool throwOnPrepare;
+        QualifiedTestBackend::ResetBehavior resetBehavior;
         const char* expectedMessagePart;
     };
 
@@ -254,22 +274,37 @@ void testWarmUpFailuresProduceDiagnostics()
         { "warm-up processing failure",
           QualifiedTestBackend::ProcessBehavior::fail,
           false,
+          QualifiedTestBackend::ResetBehavior::succeed,
           "warm-up" },
         { "non-finite warm-up output",
           QualifiedTestBackend::ProcessBehavior::produceNonFinite,
           false,
+          QualifiedTestBackend::ResetBehavior::succeed,
           "non-finite" },
         { "throwing warm-up",
           QualifiedTestBackend::ProcessBehavior::throwStd,
           false,
+          QualifiedTestBackend::ResetBehavior::succeed,
           "exception" },
         { "unknown thrown value",
           QualifiedTestBackend::ProcessBehavior::throwUnknown,
           false,
+          QualifiedTestBackend::ResetBehavior::succeed,
           "unknown exception" },
         { "throwing prepare",
           QualifiedTestBackend::ProcessBehavior::succeed,
           true,
+          QualifiedTestBackend::ResetBehavior::succeed,
+          "exception" },
+        { "failing reset",
+          QualifiedTestBackend::ProcessBehavior::succeed,
+          false,
+          QualifiedTestBackend::ResetBehavior::fail,
+          "Model reset failed" },
+        { "throwing reset",
+          QualifiedTestBackend::ProcessBehavior::succeed,
+          false,
+          QualifiedTestBackend::ResetBehavior::throwStd,
           "exception" },
     };
 
@@ -279,6 +314,7 @@ void testWarmUpFailuresProduceDiagnostics()
         rave::BackgroundModelLoader loader([log, &testCase] {
             auto backend = std::make_shared<QualifiedTestBackend>(log, -1, testCase.behavior);
             backend->throwOnPrepare = testCase.throwOnPrepare;
+            backend->resetBehavior = testCase.resetBehavior;
             return backend;
         });
 
@@ -306,8 +342,8 @@ void testInvalidRuntimeConfigurationFailsQualification()
     auto result = loader.takeResult();
     require(result.state == rave::BackgroundModelLoader::State::failed,
             "invalid sample rate fails qualification");
-    require(result.errorMessage.find("Invalid runtime configuration") != std::string::npos,
-            "invalid configuration message");
+    require(result.errorMessage.find("No audio runtime configuration") != std::string::npos,
+            "unset configuration message");
     require(result.backend == nullptr, "no backend for invalid configuration");
 
     require(loader.start("valid-model", rave::ModelRuntimeConfiguration { 48000.0, 0 }),
@@ -316,8 +352,8 @@ void testInvalidRuntimeConfigurationFailsQualification()
     result = loader.takeResult();
     require(result.state == rave::BackgroundModelLoader::State::failed,
             "invalid block size fails qualification");
-    require(result.errorMessage.find("Invalid runtime configuration") != std::string::npos,
-            "invalid block size message");
+    require(result.errorMessage.find("No audio runtime configuration") != std::string::npos,
+            "unset block size message");
 }
 
 void testRepeatedReplacementCyclesRemainBounded()

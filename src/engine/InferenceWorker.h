@@ -7,8 +7,10 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -36,7 +38,11 @@ public:
                  std::size_t maximumSamplesPerBlock,
                  std::size_t queueCapacity = 4);
 
-    [[nodiscard]] bool start();
+    // Starts the worker thread after a checked reset of the installed
+    // backend. Returns false (without starting a thread) when no backend is
+    // installed, the worker is not prepared, or the backend's reset fails;
+    // startError (when non-null) receives the actionable diagnostic.
+    [[nodiscard]] bool start(std::string* startError = nullptr);
     void stop() noexcept;
     [[nodiscard]] bool isRunning() const noexcept;
 
@@ -55,6 +61,11 @@ public:
     [[nodiscard]] std::uint64_t droppedInputBlockCount() const noexcept;
     [[nodiscard]] std::uint64_t droppedOutputBlockCount() const noexcept;
     [[nodiscard]] std::uint64_t processingErrorCount() const noexcept;
+
+    // Test-only seam fired on the starting thread immediately before the
+    // worker thread is constructed so tests can exercise thread-start failure
+    // containment deterministically. Production never sets it.
+    std::function<void()> threadStartHookForTesting;
 
 private:
     void run();

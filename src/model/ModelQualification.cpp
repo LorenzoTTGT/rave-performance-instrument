@@ -3,6 +3,7 @@
 #include <cmath>
 #include <exception>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rave
@@ -21,25 +22,38 @@ float warmUpSample(const std::size_t index, const int blockIndex) noexcept
 }
 } // namespace
 
-std::string qualifyModelBackend(ModelBackend& backend, const ModelRuntimeConfiguration& configuration)
+std::string checkModelConfiguration(ModelBackend& backend, const ModelRuntimeConfiguration& configuration)
 {
     if (!(configuration.sampleRate > 0.0) || configuration.maximumBlockSize == 0)
-        return "Invalid runtime configuration: sample rate and block size must be positive";
+        return "No audio runtime configuration is available yet; model loading is deferred";
 
+    if (!backend.supportsConfiguration(configuration.sampleRate, configuration.maximumBlockSize))
+    {
+        const auto modelRate = backend.modelSampleRate();
+        if (modelRate > 0)
+            return "Model sample rate " + std::to_string(modelRate)
+                + " Hz does not match the active "
+                + std::to_string(std::lround(configuration.sampleRate)) + " Hz configuration";
+        return "Model rejected the active runtime configuration";
+    }
+
+    return {};
+}
+
+std::string qualifyModelBackend(ModelBackend& backend, const ModelRuntimeConfiguration& configuration)
+{
     try
     {
-        if (!backend.supportsConfiguration(configuration.sampleRate, configuration.maximumBlockSize))
-        {
-            const auto modelRate = backend.modelSampleRate();
-            if (modelRate > 0)
-                return "Model sample rate " + std::to_string(modelRate)
-                    + " Hz does not match the active "
-                    + std::to_string(std::lround(configuration.sampleRate)) + " Hz configuration";
-            return "Model rejected the active runtime configuration";
-        }
+        if (const auto configurationError = checkModelConfiguration(backend, configuration);
+            !configurationError.empty())
+            return configurationError;
 
         backend.prepare(configuration.sampleRate, configuration.maximumBlockSize);
-        backend.reset();
+
+        std::string resetError;
+        if (!backend.reset(resetError))
+            return "Model reset failed: "
+                + (resetError.empty() ? std::string("model rejected reset") : std::move(resetError));
 
         std::vector<float> input(configuration.maximumBlockSize);
         std::vector<float> output(configuration.maximumBlockSize);

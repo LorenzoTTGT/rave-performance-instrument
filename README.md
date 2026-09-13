@@ -88,12 +88,11 @@ The repository currently provides:
 - A native model chooser backed by off-thread loading and qualification: every
   candidate is loaded, prepared, reset, and warmed up at the intended sample
   rate and block size before activation. Incompatible sample rates, malformed
-  metadata, unexpected output shapes, non-finite warm-up output, processing
-  failures, and thrown backend exceptions fail qualification, keep the previous
-  model active, and surface an actionable status message.
-- Transactional engine activation restores the previous usable backend when a
-  candidate fails to install; repeated replacement, prepare/release cycles,
-  editor closure, and shutdown remain bounded.
+  metadata, unexpected output shapes, failing resets, non-finite warm-up
+  output, processing failures, and thrown backend exceptions fail
+  qualification, keep the previous model active, and surface an actionable
+  status message.
+- Transactional engine activation rechecks each candidate against the exact known host configuration under lifecycle ownership and — whenever a configuration is known — prepares, checked-resets, and starts it before success, even after release or a failed rollback. Loaded and usable are tracked separately: incompatible repares or failing resets keep the model installed but report truthful bounded dry pass-through, the engine retains a lifecycle diagnostic and revision that the shared presenter used by both the plugin and standalone status surfaces renders for every transition — including release/device stop rendering installed-but-not-running —, abandoning a backend after a failed rollback clears all latent state and the serialized model identity, and the standalone derives its post-reattach status from the live engine state; the previous backend's restart is verified before claiming retention, and a later healthy replacement remains activatable. The configuration survives release and callback detachment; model loading and state restores wait for a real host configuration, and repeated replacement, prepare/release cycles, editor closure, and shutdown remain bounded.
 - A native model chooser that safely detaches and restarts the audio callback
   around backend replacement, so no loading or preparation work ever runs in
   the callback.

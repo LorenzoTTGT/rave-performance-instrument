@@ -1,12 +1,17 @@
 #include "plugin/PluginProcessor.h"
 
+#include "JuceTestAssertions.h"
+
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <span>
+#include <string>
 #include <thread>
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
@@ -251,6 +256,355 @@ void testRepeatedReplacementRemainsBounded(const juce::File& modelFile, const ju
 
     processor->releaseResources();
 }
+void testRestoreBeforePrepareIsDeferred(const juce::File& modelFile)
+{
+    // Build a saved state that references an existing model file.
+    auto original = std::make_unique<RavePluginProcessor>();
+    original->prepareToPlay(48000.0, 8);
+    require(loadModel(*original, modelFile), "state source model activates");
+    juce::MemoryBlock state;
+    original->getStateInformation(state);
+    original->releaseResources();
+
+    // A processor that has never seen a host configuration must not start a
+    // restore (or any load) against invented default configuration values.
+    auto restored = std::make_unique<RavePluginProcessor>();
+    restored->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    require(!restored->isModelLoading(), "restore does not start before prepare");
+    require(restored->modelStatus().containsIgnoreCase(
+                "Waiting for the host audio configuration"),
+            "deferred restore status is actionable");
+    require(!restored->startModelLoad(modelFile),
+            "user loads are also deferred before prepare");
+    require(restored->modelStatus().containsIgnoreCase(
+                "Waiting for the host audio configuration"),
+            "deferred load status is actionable");
+
+    // Once the host provides a configuration, the queued restore proceeds.
+    restored->prepareToPlay(48000.0, 8);
+    restored->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    require(restored->isModelLoading(), "restore starts once a configuration exists");
+    require(waitForModelSettled(*restored), "deferred restore settles");
+    require(restored->finishModelLoadIfReady(), "deferred restore activates");
+    require(restored->latentDimensionCount() == 2, "deferred restore latent count");
+
+    restored->releaseResources();
+}
+
+void testReprepareDuringLoadKeepsPreviousModel(const juce::File& modelFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "previous model activates at 48 kHz");
+    require(processor->setLatentControl(0, 1.0f), "latent set on the active model");
+
+    // The replacement is qualified at 48 kHz in the background, then the host
+    // reprepares at 44.1 kHz before activation; activation must refuse the
+    // stale candidate instead of replacing the previous usable backend.
+    require(processor->startModelLoad(modelFile), "replacement load starts");
+    processor->prepareToPlay(44100.0, 8);
+    require(waitForModelSettled(*processor), "replacement load settles");
+    require(processor->finishModelLoadIfReady(), "stale candidate result is consumed");
+    require(processor->latentDimensionCount() == 2,
+            "previous model survives the rate change");
+    // Latent storage is reset by the host reprepare itself (RAVE-04); the
+    // refusal must at least keep the previous controls addressable.
+    require(processor->setLatentControl(0, 1.0f), "previous latents still addressable");
+    require(std::abs(processor->latentControl(0) - 1.0f) < 0.001f,
+            "previous model accepts latent updates after refusal");
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("activation failed")
+                || status.containsIgnoreCase("sample rate"),
+            "status explains why the stale candidate was refused");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
+
+void testIncompatibleReprepareReportsStatus(const juce::File& modelFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "model activates at 48 kHz");
+    require(processor->latentDimensionCount() == 2, "latent metadata available");
+    require(processor->modelStatus().containsIgnoreCase("active"),
+            "active claim before the incompatible reprepare");
+
+    // The host reproves at an incompatible rate: the visible status must
+    // report the incompatibility and the dry fallback instead of leaving the
+    // active claim up while the model is silent.
+    processor->prepareToPlay(44100.0, 8);
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("44100") && status.containsIgnoreCase("48000"),
+            "status names the sample-rate conflict");
+    require(status.containsIgnoreCase("dry pass-through"),
+            "status names the bounded dry fallback");
+    require(!status.containsIgnoreCase("active —"),
+            "no active claim while the model is silent");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            buffer.setSample(channel, sample, 0.25f * static_cast<float>(sample + 1));
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    // Returning to the compatible configuration restores the active claim.
+    processor->prepareToPlay(48000.0, 8);
+    require(processor->modelStatus().containsIgnoreCase("active"),
+            "active claim restored at the compatible configuration");
+    require(processor->latentDimensionCount() == 2, "latent metadata restored");
+
+    processor->releaseResources();
+}
+
+// Reset succeeds for the loader-qualification call and the activation-time
+// worker start, then refuses; a later host reprepare must surface the failing
+// checked reset in the visible status.
+class OneShotResetPluginBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+
+    bool reset(std::string& errorMessage) override
+    {
+        const auto call = resetCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (call <= 2)
+            return true;
+        errorMessage = "reset refuses on call " + std::to_string(call);
+        return false;
+    }
+
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+
+    bool process(const std::span<const float> input,
+                 const std::span<const float>,
+                 const std::span<float> output) override
+    {
+        for (std::size_t index = 0; index < input.size(); ++index)
+            output[index] = input[index] * 3.0f;
+        return true;
+    }
+
+    std::atomic<int> resetCalls { 0 };
+};
+
+void testResetFailureAtReprepareReportsStatus(const juce::File& modelFile)
+{
+    auto backend = std::make_shared<OneShotResetPluginBackend>();
+    auto processor = std::make_unique<RavePluginProcessor>(
+        [backend]() -> rave::ModelBackendPtr { return backend; });
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "one-shot reset model activates");
+    require(backend->resetCalls.load() == 2,
+            "qualification and activation resets consumed before the reprepare");
+    require(processor->modelStatus().containsIgnoreCase("active"),
+            "activation claims the active model");
+
+    // The host reprepare re-runs the engine prepare; the next checked reset
+    // refuses and the status must visibly report the failure.
+    processor->prepareToPlay(48000.0, 8);
+    require(backend->resetCalls.load() == 3, "reprepare reached the backend reset");
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("reset") && status.containsIgnoreCase("dry pass-through"),
+            "reset failure at reprepare is visible");
+    require(!status.containsIgnoreCase("active —"),
+            "no active claim while the model cannot start");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            buffer.setSample(channel, sample, 0.25f * static_cast<float>(sample + 1));
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
+// Prepare throws for calls in [prepareThrowFromCall, prepareThrowFromCall + prepareThrowCount); other lifecycle calls succeed.
+class PluginNthCallThrowingBackend final : public rave::ModelBackend
+{
+public:
+    void prepare(double, std::size_t) override
+    {
+        const auto call = prepareCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+        const auto offset = call - prepareThrowFromCall;
+        if (prepareThrowCount > 0 && offset >= 0 && offset < prepareThrowCount)
+            throw std::runtime_error("prepare refuses on call " + std::to_string(call));
+    }
+
+    bool load(const std::string&, std::string&) override { return true; }
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+
+    bool process(const std::span<const float> input,
+                 const std::span<const float>,
+                 const std::span<float> output) override
+    {
+        for (std::size_t index = 0; index < input.size(); ++index)
+            output[index] = input[index] * 3.0f;
+        return true;
+    }
+
+    std::atomic<int> prepareCalls { 0 };
+    int prepareThrowFromCall = 0;
+    int prepareThrowCount = 0;
+};
+
+void testReleaseReportsInstalledNotRunning(const juce::File& modelFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "model activates");
+    require(processor->modelStatus().containsIgnoreCase("active"), "active claim before release");
+
+    // Release/device stop must publish the usability transition so the visible
+    // status renders installed-but-not-running instead of the active claim.
+    processor->releaseResources();
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("not running"),
+            "release renders installed-but-not-running");
+    require(!status.containsIgnoreCase("active —"), "no stale active claim after release");
+
+    // A reprepare restores the active claim via successful prepare/start.
+    processor->prepareToPlay(48000.0, 8);
+    require(processor->modelStatus().containsIgnoreCase("active"),
+            "active claim restored after reprepare");
+    processor->releaseResources();
+}
+
+void testPrepareThrowAtReprepareReportsStatus(const juce::File& modelFile)
+{
+    // Qualification prepares (call 1) and activation worker-prepare (call 2)
+    // succeed; the host reprepare (call 3) throws inside the backend.
+    auto backend = std::make_shared<PluginNthCallThrowingBackend>();
+    backend->prepareThrowFromCall = 3;
+    backend->prepareThrowCount = 1;
+    auto processor = std::make_unique<RavePluginProcessor>(
+        [backend]() -> rave::ModelBackendPtr { return backend; });
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "model activates before the throwing reprepare");
+
+    // prepareToPlay must return normally with the backend prepare throw
+    // contained, and the status must name the failure and the dry fallback.
+    processor->prepareToPlay(48000.0, 8);
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("backend prepare failed")
+                && status.containsIgnoreCase("dry pass-through"),
+            "prepare throw is visible in the status");
+    require(!status.containsIgnoreCase("active —"), "no active claim after the prepare throw");
+
+    juce::AudioBuffer<float> buffer(2, 8);
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            buffer.setSample(channel, sample, 0.25f * static_cast<float>(sample + 1));
+    juce::MidiBuffer midi;
+    processor->processBlock(buffer, midi);
+    requireFiniteOutput(buffer);
+
+    processor->releaseResources();
+}
+// Fresh backend instances share one reset counter; calls 4 and 5 fail so a
+// replacement candidate fails at activation start (call 4) and the rollback
+// restart of the previous latent-capable backend (call 5) also fails, which
+// abandons the backend.
+class LatentSharedCounterResetBackend final : public rave::ModelBackend
+{
+public:
+    explicit LatentSharedCounterResetBackend(std::shared_ptr<std::atomic<int>> sharedCounter)
+        : resetCounter(std::move(sharedCounter)) {}
+
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+
+    bool reset(std::string& errorMessage) override
+    {
+        const auto call = resetCounter->fetch_add(1, std::memory_order_relaxed) + 1;
+        if (call < failFromCall || call >= failFromCall + failCount)
+            return true;
+        errorMessage = "reset refuses on call " + std::to_string(call);
+        return false;
+    }
+
+    std::size_t latentDimensionCount() const noexcept override { return 2; }
+
+    bool process(const std::span<const float> input,
+                 const std::span<const float> latentControls,
+                 const std::span<float> output) override
+    {
+        for (std::size_t index = 0; index < input.size(); ++index)
+            output[index] = input[index] * 3.0f + latentControls[0];
+        return true;
+    }
+
+    std::shared_ptr<std::atomic<int>> resetCounter;
+    int failFromCall = 4;
+    int failCount = 2;
+};
+
+void testRollbackFailureClearsLatentsAndSerializedModelPath(const juce::File& modelFile)
+{
+    auto counter = std::make_shared<std::atomic<int>>(0);
+    auto processor = std::make_unique<RavePluginProcessor>(
+        [counter]() -> rave::ModelBackendPtr {
+            return std::make_shared<LatentSharedCounterResetBackend>(counter);
+        });
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "latent previous model activates");
+    require(counter->load() == 2, "qualification and activation resets consumed");
+    require(processor->latentDimensionCount() == 2, "previous latent count exposed");
+    require(processor->setLatentControl(0, 0.75f), "latent set before the failed replacement");
+
+    // Replacement: qualification (call 3) passes; activation start (call 4)
+    // fails; the rollback restart of the previous (call 5) also fails, so the
+    // backend is abandoned.
+    require(loadModel(*processor, modelFile), "failing replacement is consumed");
+    require(processor->latentDimensionCount() == 0, "no model means zero latents");
+    require(!processor->setLatentControl(0, 1.0f), "latent storage cleared with the abandoned backend");
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("activation failed") && status.containsIgnoreCase("dry pass-through"),
+            "abandonment status is truthful");
+    processor->refreshLifecycleStatus();
+    require(processor->modelStatus() == status,
+            "immediate lifecycle refresh preserves explicit activation failure context");
+
+    // The dropped model's path must not survive serialization: restoring the
+    // state into a fresh processor must not start loading the dead path.
+    juce::MemoryBlock state;
+    processor->getStateInformation(state);
+    auto restorer = std::make_unique<RavePluginProcessor>();
+    restorer->prepareToPlay(48000.0, 8);
+    restorer->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    require(!restorer->isModelLoading(), "no dropped model path is restored");
+    require(!restorer->modelStatus().containsIgnoreCase("Restoring"),
+            "no restoring claim for a dropped model");
+
+    // A later healthy replacement activates and serializes its identity again.
+    require(loadModel(*processor, modelFile), "healthy replacement activates after abandonment");
+    require(processor->latentDimensionCount() == 2, "replacement latent count exposed");
+    require(processor->modelStatus().containsIgnoreCase("active"), "replacement claims active");
+    juce::MemoryBlock recoveredState;
+    processor->getStateInformation(recoveredState);
+    auto recoveredRestorer = std::make_unique<RavePluginProcessor>();
+    recoveredRestorer->prepareToPlay(48000.0, 8);
+    recoveredRestorer->setStateInformation(recoveredState.getData(),
+                                           static_cast<int>(recoveredState.getSize()));
+    require(recoveredRestorer->isModelLoading(),
+            "healthy replacement serializes its model path for restore");
+    require(waitForModelSettled(*recoveredRestorer), "restored replacement settles");
+    require(recoveredRestorer->finishModelLoadIfReady(), "restored replacement loads");
+    require(recoveredRestorer->latentDimensionCount() == 2, "restored replacement latent count");
+    recoveredRestorer->releaseResources();
+
+    processor->releaseResources();
+}
 } // namespace
 
 int main(const int argc, const char* const* argv)
@@ -265,9 +619,18 @@ int main(const int argc, const char* const* argv)
         junkFile.replaceWithText("this is not a TorchScript model");
         testFailedLoadKeepsPreviousModel(juce::File(argv[1]), junkFile);
         testSampleRateMismatchIsRejectedBeforeActivation(juce::File(argv[1]));
+        testRestoreBeforePrepareIsDeferred(juce::File(argv[1]));
+        testReprepareDuringLoadKeepsPreviousModel(juce::File(argv[1]));
+        testIncompatibleReprepareReportsStatus(juce::File(argv[1]));
+        testResetFailureAtReprepareReportsStatus(juce::File(argv[1]));
+        testReleaseReportsInstalledNotRunning(juce::File(argv[1]));
+        testPrepareThrowAtReprepareReportsStatus(juce::File(argv[1]));
+        testRollbackFailureClearsLatentsAndSerializedModelPath(juce::File(argv[1]));
         testEditorClosureDuringLoad(juce::File(argv[1]));
         testRepeatedReplacementRemainsBounded(juce::File(argv[1]), junkFile);
         junkFile.deleteFile();
     }
+
+    require(rave_test::juceAssertionCount() == 0, "no JUCE assertions fired in the plugin test");
     std::cout << "PluginProcessor tests passed\n";
 }

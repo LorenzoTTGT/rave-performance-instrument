@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -22,7 +23,9 @@ public:
     static constexpr std::size_t macroCount = 8;
     static constexpr std::size_t midiTargetCount = macroCount + 1;
 
-    RavePluginProcessor();
+    // The optional factory injects a test backend; production uses the
+    // TorchScript backend factory.
+    explicit RavePluginProcessor(std::function<rave::ModelBackendPtr()> backendFactory = {});
     ~RavePluginProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
@@ -63,6 +66,14 @@ public:
     [[nodiscard]] float latentControl(std::size_t index) const noexcept;
     [[nodiscard]] bool setLatentControl(std::size_t index, float value) noexcept;
 
+    // Surfaces engine lifecycle transitions (incompatible reprepare, failing
+    // checked reset/start, release/device stop) in the visible status instead
+    // of leaving an active claim while dry fallback is used. Renders through
+    // the shared lifecycle presenter and only acts on unseen revisions, so it
+    // never overwrites an explicit activation status that already observed
+    // the current revision. Message thread only.
+    void refreshLifecycleStatus();
+
 private:
     void timerCallback() override;
     void applyMidi(juce::MidiBuffer& midiMessages) noexcept;
@@ -87,4 +98,7 @@ private:
     std::vector<float> pendingLatentRestore;
     std::atomic<bool> hasQueuedModelRestore { false };
     std::atomic<std::uint64_t> currentModelRevision { 0 };
+    // Lifecycle status refresh state (message thread only, guarded by
+    // modelStateLock when the status itself is written).
+    std::uint64_t lastSeenLifecycleRevision = 0;
 };

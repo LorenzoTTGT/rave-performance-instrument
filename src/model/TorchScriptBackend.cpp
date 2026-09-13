@@ -16,6 +16,10 @@ namespace
 {
 using MethodParameters = std::array<std::int64_t, 4>;
 
+// Upper sanity bound for a declared model sample rate; far above any audio
+// interface rate, so values beyond it indicate malformed metadata.
+constexpr int maximumPlausibleSampleRate = 1'000'000;
+
 // Result of probing an optional nn~/RAVE metadata buffer. "present but not
 // valid" distinguishes malformed metadata, which must reject the model, from
 // absent metadata, which simply means the capability is unavailable.
@@ -35,14 +39,21 @@ MethodParameterProbe readMethodParameters(const torch::jit::Module& module,
 
     probe.present = true;
     const auto value = module.attr(attributeName);
+    // Present metadata must be a strictly valid parameter spec; anything else
+    // (non-tensor, fractional/wrong dtype, wrong rank or shape, non-positive
+    // values) is malformed and rejects the model instead of being coerced.
     if (!value.isTensor())
         return probe;
 
-    const auto tensor = value.toTensor().to(torch::kCPU).to(torch::kInt64).contiguous();
-    if (tensor.numel() != 4)
+    const auto tensor = value.toTensor();
+    if (!at::isIntegralType(tensor.scalar_type(), /*includeBool=*/false))
         return probe;
 
-    const auto* data = tensor.data_ptr<std::int64_t>();
+    const auto cpu = tensor.to(torch::kCPU).to(torch::kInt64).contiguous();
+    if (cpu.dim() != 1 || cpu.numel() != 4)
+        return probe;
+
+    const auto* data = cpu.data_ptr<std::int64_t>();
     MethodParameters parameters { data[0], data[1], data[2], data[3] };
     if (std::any_of(parameters.begin(), parameters.end(), [](const auto item) { return item <= 0; }))
         return probe;
@@ -161,8 +172,58 @@ bool TorchScriptBackend::load(const std::string& modelPath, std::string& errorMe
             sampleRateMethod.has_value())
         {
             const auto value = (*sampleRateMethod)({});
-            if (value.isInt())
-                exportedSampleRate = static_cast<int>(value.toInt());
+            if (!value.isInt())
+            {
+                errorMessage = "RAVE get_sample_rate metadata is malformed";
+                return false;
+            }
+            const auto declaredRate = value.toInt();
+            // A declared sample rate must be a plausible audio rate; anything
+            // else is malformed metadata rather than an unknown rate.
+            if (declaredRate <= 0 || declaredRate > maximumPlausibleSampleRate)
+            {
+                errorMessage = "RAVE get_sample_rate metadata is out of range";
+                return false;
+            }
+            exportedSampleRate = static_cast<int>(declaredRate);
+        }
+        else if (candidate->hasattr("sampling_rate"))
+        {
+            // nn~/RAVE exports also declare the rate as an integer buffer.
+            const auto value = candidate->attr("sampling_rate");
+            if (!value.isTensor())
+            {
+                errorMessage = "RAVE sampling_rate metadata is malformed";
+                return false;
+            }
+            const auto tensor = value.toTensor();
+            if (!at::isIntegralType(tensor.scalar_type(), /*includeBool=*/false))
+            {
+                errorMessage = "RAVE sampling_rate metadata is malformed";
+                return false;
+            }
+            // Validate rank and shape before any conversion or flattening: a
+            // declared rate must be a scalar or a single-element 1-D buffer.
+            // Anything else (for example a rank-2 singleton) is malformed
+            // metadata rather than something to coerce.
+            if (tensor.dim() != 0 && tensor.dim() != 1)
+            {
+                errorMessage = "RAVE sampling_rate metadata is malformed";
+                return false;
+            }
+            if (tensor.dim() == 1 && tensor.size(0) != 1)
+            {
+                errorMessage = "RAVE sampling_rate metadata is malformed";
+                return false;
+            }
+            const auto cpu = tensor.to(torch::kCPU).to(torch::kInt64);
+            const auto declaredRate = cpu.item<std::int64_t>();
+            if (declaredRate <= 0 || declaredRate > maximumPlausibleSampleRate)
+            {
+                errorMessage = "RAVE sampling_rate metadata is out of range";
+                return false;
+            }
+            exportedSampleRate = static_cast<int>(declaredRate);
         }
 
         impl->module = std::move(candidate);
@@ -202,21 +263,32 @@ bool TorchScriptBackend::supportsConfiguration(const double sampleRate,
         || std::abs(sampleRate - static_cast<double>(impl->exportedSampleRate)) < 0.5;
 }
 
-void TorchScriptBackend::reset() noexcept
+bool TorchScriptBackend::reset(std::string& errorMessage)
 {
+    errorMessage.clear();
     if (impl->module == nullptr)
-        return;
+        return true;
 
     try
     {
         torch::InferenceMode inferenceMode;
         if (const auto resetMethod = impl->module->find_method("reset"); resetMethod.has_value())
             (*resetMethod)({});
+        return true;
+    }
+    catch (const c10::Error& error)
+    {
+        errorMessage = error.what_without_backtrace();
+    }
+    catch (const std::exception& error)
+    {
+        errorMessage = error.what();
     }
     catch (...)
     {
-        // reset is best-effort because this interface cannot report an error.
+        errorMessage = "unknown reset failure";
     }
+    return false;
 }
 
 std::size_t TorchScriptBackend::latentDimensionCount() const noexcept

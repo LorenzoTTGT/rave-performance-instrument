@@ -27,6 +27,7 @@ add_library(rave_engine STATIC
     src/engine/AudioBlockQueue.h
     src/engine/InferenceWorker.cpp
     src/engine/InferenceWorker.h
+    src/engine/LifecycleStatusText.h
     src/engine/RaveAudioEngine.cpp
     src/engine/RaveAudioEngine.h
     src/model/BackgroundModelLoader.cpp
@@ -177,6 +178,10 @@ endif()
 if(BUILD_TESTING)
     add_executable(rave_plugin_tests tests/PluginProcessorTests.cpp)
     target_include_directories(rave_plugin_tests PRIVATE src)
+    # Force-include the assertion recorder before any JUCE header so JUCE
+    # assertions in test-compiled code fail the test instead of only logging.
+    target_compile_options(rave_plugin_tests PRIVATE
+        "-include${CMAKE_CURRENT_SOURCE_DIR}/tests/JuceTestAssertions.h")
     target_link_libraries(rave_plugin_tests PRIVATE
         rave_plugin
         juce::juce_audio_processors

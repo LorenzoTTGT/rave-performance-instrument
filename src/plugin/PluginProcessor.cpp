@@ -1,6 +1,7 @@
 #include "plugin/PluginProcessor.h"
 
 #include "plugin/PluginEditor.h"
+#include "engine/LifecycleStatusText.h"
 
 #if RAVE_HAS_LIBTORCH
 #include "model/TorchScriptBackend.h"
@@ -12,7 +13,17 @@
 #include <cstring>
 #include <memory>
 
-RavePluginProcessor::RavePluginProcessor()
+namespace
+{
+// juce::String(const char*) rejects non-ASCII literals, so every status string
+// that contains typographic characters is built through an explicit UTF-8 pointer.
+[[nodiscard]] juce::String utf8(const char* const text)
+{
+    return juce::String(juce::CharPointer_UTF8(text));
+}
+} // namespace
+
+RavePluginProcessor::RavePluginProcessor(std::function<rave::ModelBackendPtr()> backendFactory)
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true))
@@ -40,9 +51,12 @@ RavePluginProcessor::RavePluginProcessor()
         controller.store(-1, std::memory_order_relaxed);
 
 #if RAVE_HAS_LIBTORCH
-    modelLoader = std::make_unique<rave::BackgroundModelLoader>([] {
-        return std::make_shared<rave::TorchScriptBackend>();
-    });
+    modelLoader = std::make_unique<rave::BackgroundModelLoader>(
+        backendFactory != nullptr
+            ? std::move(backendFactory)
+            : [] { return std::make_shared<rave::TorchScriptBackend>(); });
+#else
+    static_cast<void>(backendFactory);
 #endif
     startTimerHz(10);
 }
@@ -58,11 +72,37 @@ void RavePluginProcessor::prepareToPlay(const double sampleRate, const int sampl
     engine.prepare(sampleRate,
                    static_cast<std::size_t>(std::max(1, samplesPerBlock)),
                    getTotalNumOutputChannels());
+    // Surface an incompatible reprepare or failing checked reset/start in the
+    // visible status instead of leaving the previous active claim up.
+    refreshLifecycleStatus();
+}
+
+void RavePluginProcessor::refreshLifecycleStatus()
+{
+    const auto revision = engine.lifecycleRevision();
+    const juce::ScopedLock lock(modelStateLock);
+    if (revision == lastSeenLifecycleRevision)
+        return;
+    lastSeenLifecycleRevision = revision;
+
+    // Shared presenter: renders the recorded diagnostic verbatim (incompatible
+    // reprepare or failing checked reset/start), the active claim when the
+    // model is usable, installed-but-not-running after release/dry fallback,
+    // or the no-model text — never a stale active claim while silent.
+    currentModelStatus = rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
+                                                   engine.hasUsableModel(),
+                                                   engine.hasModelBackend(),
+                                                   activeModelFile.getFileName(),
+                                                   engine.latentDimensionCount(),
+                                                   "No model loaded");
+    currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 
 void RavePluginProcessor::releaseResources()
 {
     engine.release();
+    // Publish installed-but-not-running instead of leaving the active claim.
+    refreshLifecycleStatus();
 }
 
 bool RavePluginProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -201,7 +241,7 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         queuedRestoreModelFile = restoredModel;
         queuedRestoreLatents = std::move(restoredLatents);
         hasQueuedModelRestore.store(true, std::memory_order_release);
-        currentModelStatus = "Restoring " + restoredModel.getFileName() + "…";
+        currentModelStatus = "Restoring " + restoredModel.getFileName() + utf8("…");
     }
 
     if (const auto* const messageManager = juce::MessageManager::getInstanceWithoutCreating();
@@ -243,15 +283,24 @@ bool RavePluginProcessor::isLearningMidiTarget(const std::size_t targetIndex) co
 bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
 {
 #if RAVE_HAS_LIBTORCH
+    // Never qualify a candidate against invented defaults: defer until a real
+    // host/device configuration exists.
+    const auto configuration = engine.runtimeConfiguration();
+    if (configuration.sampleRate <= 0.0 || configuration.maximumBlockSize == 0)
+    {
+        const juce::ScopedLock lock(modelStateLock);
+        currentModelStatus = "Waiting for the host audio configuration before loading a model";
+        return false;
+    }
+
     if (!modelFile.existsAsFile() || modelLoader == nullptr
-        || !modelLoader->start(modelFile.getFullPathName().toStdString(),
-                               engine.runtimeConfiguration()))
+        || !modelLoader->start(modelFile.getFullPathName().toStdString(), configuration))
         return false;
 
     const juce::ScopedLock lock(modelStateLock);
     pendingModelFile = modelFile;
     pendingLatentRestore.clear();
-    currentModelStatus = "Loading " + modelFile.getFileName() + "…";
+    currentModelStatus = "Loading " + modelFile.getFileName() + utf8("…");
     return true;
 #else
     static_cast<void>(modelFile);
@@ -288,7 +337,7 @@ bool RavePluginProcessor::finishModelLoadIfReady()
         // replaced and remains playable.
         const juce::ScopedLock lock(modelStateLock);
         currentModelStatus = "Model load failed: " + juce::String(result.errorMessage)
-            + (engine.hasModelBackend() ? " — previous model still active" : "");
+            + (engine.hasUsableModel() ? utf8(" — previous model still active") : juce::String());
         currentModelRevision.fetch_add(1, std::memory_order_release);
         return true;
     }
@@ -338,6 +387,7 @@ bool RavePluginProcessor::setLatentControl(const std::size_t index, const float 
 
 void RavePluginProcessor::timerCallback()
 {
+    refreshLifecycleStatus();
     static_cast<void>(finishModelLoadIfReady());
 
 #if RAVE_HAS_LIBTORCH
@@ -362,8 +412,18 @@ void RavePluginProcessor::timerCallback()
         return;
     }
 
-    if (modelLoader->start(modelFile.getFullPathName().toStdString(),
-                           engine.runtimeConfiguration()))
+    // A restore must not qualify against invented defaults either; defer it
+    // until a real host/device configuration exists.
+    const auto configuration = engine.runtimeConfiguration();
+    if (configuration.sampleRate <= 0.0 || configuration.maximumBlockSize == 0)
+    {
+        const juce::ScopedLock lock(modelStateLock);
+        currentModelStatus = "Waiting for the host audio configuration before restoring "
+            + modelFile.getFileName();
+        return;
+    }
+
+    if (modelLoader->start(modelFile.getFullPathName().toStdString(), configuration))
     {
         const juce::ScopedLock lock(modelStateLock);
         pendingModelFile = modelFile;
@@ -371,7 +431,7 @@ void RavePluginProcessor::timerCallback()
         queuedRestoreModelFile = juce::File {};
         queuedRestoreLatents.clear();
         hasQueuedModelRestore.store(false, std::memory_order_release);
-        currentModelStatus = "Restoring " + modelFile.getFileName() + "…";
+        currentModelStatus = "Restoring " + modelFile.getFileName() + utf8("…");
     }
 #endif
 }
@@ -408,14 +468,14 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
                                         const std::vector<float>& restoredLatents)
 {
     bool activated = false;
-    juce::String activationError;
+    std::string activationFailure;
 
     suspendProcessing(true);
     {
         const juce::ScopedLock callbackGuard(getCallbackLock());
         try
         {
-            activated = engine.activateModelBackend(std::move(backend));
+            activated = engine.activateModelBackend(std::move(backend), &activationFailure);
             if (activated)
             {
                 const auto restoreCount = std::min(restoredLatents.size(), engine.latentDimensionCount());
@@ -425,27 +485,43 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
         }
         catch (const std::exception& exception)
         {
-            activationError = exception.what();
+            activationFailure = exception.what();
         }
         catch (...)
         {
-            activationError = "unknown activation error";
+            activationFailure = "unknown activation error";
         }
     }
     suspendProcessing(false);
 
+    const auto lifecycleRevision = engine.lifecycleRevision();
     const juce::ScopedLock lock(modelStateLock);
+    // This explicit activation result already incorporates the engine's
+    // current lifecycle outcome. Mark that revision observed so an immediate
+    // timer refresh cannot erase candidate-failure context with the underlying
+    // rollback diagnostic alone.
+    lastSeenLifecycleRevision = lifecycleRevision;
     if (activated)
     {
         activeModelFile = modelFile;
-        currentModelStatus = modelFile.getFileName() + " active — "
+        currentModelStatus = modelFile.getFileName() + utf8(" active — ")
             + juce::String(engine.latentDimensionCount()) + " latent dimensions";
     }
     else
     {
+        // A rollback that abandoned the previous model must also drop the
+        // serialized identity: no model means zero latents and no dead path
+        // for later state restores.
+        if (!engine.hasModelBackend())
+            activeModelFile = juce::File {};
+
+        // The engine diagnostic already states the truthful outcome (previous
+        // model retained, no previous model, or rollback failure with bounded
+        // dry pass-through) and may contain typographic characters, so build
+        // it through the explicit UTF-8 pointer.
         currentModelStatus = "Model activation failed: "
-            + (activationError.isNotEmpty() ? activationError : juce::String("candidate was not accepted"))
-            + (engine.hasModelBackend() ? " — previous model still active" : "");
+            + juce::String(activationFailure.empty() ? "candidate was not accepted"
+                                                     : utf8(activationFailure.c_str()));
     }
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }

@@ -16,7 +16,7 @@ public:
 
     bool load(const std::string& modelPath, std::string& errorMessage) override;
     void prepare(double sampleRate, std::size_t maximumBlockSize) override;
-    void reset() noexcept override;
+    bool reset(std::string& errorMessage) override;
 
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept override;
     [[nodiscard]] int modelSampleRate() const noexcept override;
