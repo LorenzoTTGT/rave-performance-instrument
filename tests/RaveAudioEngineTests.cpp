@@ -405,14 +405,51 @@ void testDeterministicResultValidationAndFade()
 
     engine.processAudio(inputs, 1, outputs, 1, 2048);
     engine.setDryWet(1.0f);
-    engine.processAudio(inputs, 1, outputs, 1, 1);
-    const auto expected = 1.0f + 2.0f / (240.0f * 240.0f);
-    require(std::abs(output[0] - expected) < 0.00001f,
-            "dry/wet and availability ramps start independently over exactly 5 ms");
+    engine.processAudio(inputs, 1, outputs, 1, 2);
+    require(output[0] == 1.0f
+                && std::abs(output[1] - (1.0f + 4.0f / (240.0f * 240.0f))) < 0.00001f,
+            "dry-to-wet availability starts at zero and rises over exactly 5 ms");
 
-    engine.processAudio(inputs, 1, outputs, 1, 2047);
+    engine.processAudio(inputs, 1, outputs, 1, 2046);
     require(!engine.publishResultForTesting(wet.data(), wet.size(), 0), "late result rejected");
     require(engine.runtimeTelemetry().lateResults == 1, "late result counted precisely");
+}
+
+void testExactDeadlineAndReleaseInvalidation()
+{
+    constexpr std::size_t deadline = 4096 - 240;
+    std::vector<float> input(deadline, 1.0f), output(deadline);
+    const float* inputs[] { input.data() };
+    float* outputs[] { output.data() };
+
+    rave::RaveAudioEngine exact;
+    exact.prepare(48000.0, 31, 1);
+    exact.processAudio(inputs, 1, outputs, 1, static_cast<int>(deadline));
+    std::vector<float> wet(2048, 2.0f);
+    require(exact.publishResultForTesting(wet.data(), wet.size(), 0),
+            "result at the exact pre-playback deadline is accepted");
+    float oneInput = 1.0f, oneOutput = -1.0f;
+    const float* oneInputs[] { &oneInput };
+    float* oneOutputs[] { &oneOutput };
+    exact.processAudio(oneInputs, 1, oneOutputs, 1, 1);
+
+    rave::RaveAudioEngine late;
+    late.prepare(48000.0, 19, 1);
+    late.processAudio(inputs, 1, outputs, 1, static_cast<int>(deadline));
+    late.processAudio(oneInputs, 1, oneOutputs, 1, 1);
+    require(!late.publishResultForTesting(wet.data(), wet.size(), 0),
+            "result one sample after commitment is permanently rejected");
+    require(late.runtimeTelemetry().lateResults == 1, "just-late rejection is counted once");
+
+    std::vector<float> tail(5000, 0.75f), rendered(5000);
+    const float* tailInputs[] { tail.data() };
+    float* tailOutputs[] { rendered.data() };
+    exact.processAudio(tailInputs, 1, tailOutputs, 1, 5000);
+    exact.release();
+    oneOutput = -1.0f;
+    exact.processAudio(oneInputs, 1, oneOutputs, 1, 1);
+    require(oneOutput == 0.0f && !exact.runtimeTelemetry().transportReady,
+            "release invalidates readiness and prevents stale timeline rendering");
 }
 
 void testRuntimeConfigurationReporting()
@@ -483,7 +520,7 @@ bool runCallbacksUntilProcessed(rave::RaveAudioEngine& engine)
     static_cast<void>(engine.publishResultForTesting(wet.data(), wet.size(), 0));
     engine.processAudio(inputs, 2, outputs, 2, 2048);
     engine.processAudio(inputs, 2, outputs, 2, 2048);
-    return std::abs((outputRight.back() - outputLeft.back()) - 450.0f) < 0.001f;
+    return std::abs((outputRight[500] - outputLeft[500]) - 450.0f) < 0.001f;
 }
 
 void testFailedActivationPreservesPreviousBackend()
@@ -1223,6 +1260,7 @@ int main()
     testDryFallbackWithoutModel();
     testProcessedAudioUsesMatchingDelayedDryBlock();
     testDeterministicResultValidationAndFade();
+    testExactDeadlineAndReleaseInvalidation();
     testRuntimeConfigurationReporting();
     testActivationRechecksCurrentConfiguration();
     testFailedActivationPreservesPreviousBackend();

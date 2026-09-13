@@ -314,10 +314,11 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         startError->clear();
 
     inferenceWorker.stop();
+    runtimePrepared.store(false, std::memory_order_release);
     sampleClock = 0;
     submittedFrame = 0;
+    nextCommitFrame = 0;
     smoothedDryWet = dryWet();
-    availability = 0.0f;
     missedDeadlines.store(0, std::memory_order_relaxed);
     alignmentErrors.store(0, std::memory_order_relaxed);
     lateResults.store(0, std::memory_order_relaxed);
@@ -338,8 +339,15 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
     inputFrame.assign(inferenceQuantumSamples, 0.0f);
     receiveFrame.assign(inferenceQuantumSamples, 0.0f);
     wetTimeline.assign(timelineFrameCount * inferenceQuantumSamples, 0.0f);
-    wetFrameTags.assign(timelineFrameCount, std::numeric_limits<std::uint64_t>::max());
-    smoothingStep = static_cast<float>(1.0 / std::max(1.0, sampleRate * 0.005));
+    const auto invalidTag = std::numeric_limits<std::uint64_t>::max();
+    wetFrameTags.assign(timelineFrameCount, invalidTag);
+    committedFrameTags.assign(timelineFrameCount, invalidTag);
+    eligibleFrameTags.assign(timelineFrameCount, invalidTag);
+    committedWet.assign(timelineFrameCount, false);
+    fadeSamples = static_cast<std::size_t>(std::ceil(sampleRate * 0.005));
+    smoothingStep = 1.0f / static_cast<float>(std::max<std::size_t>(1, fadeSamples));
+
+    runtimePrepared.store(true, std::memory_order_release);
 
     if (modelInstalled)
     {
@@ -406,6 +414,13 @@ void RaveAudioEngine::release() noexcept
 {
     const std::scoped_lock lock(lifecycleMutex);
     inferenceWorker.stop();
+    runtimePrepared.store(false, std::memory_order_release);
+    const auto invalidTag = std::numeric_limits<std::uint64_t>::max();
+    std::fill(wetFrameTags.begin(), wetFrameTags.end(), invalidTag);
+    std::fill(committedFrameTags.begin(), committedFrameTags.end(), invalidTag);
+    std::fill(eligibleFrameTags.begin(), eligibleFrameTags.end(), invalidTag);
+    std::fill(committedWet.begin(), committedWet.end(), false);
+    renderedSamples.store(0, std::memory_order_relaxed);
     // Publishing the usability transition is the point: pollers must render
     // installed-but-not-running after release/device stop instead of keeping
     // a stale active claim. The known host configuration is deliberately
@@ -417,20 +432,20 @@ void RaveAudioEngine::release() noexcept
 
 bool RaveAudioEngine::commitResult(const float* const samples,
                                    const std::size_t count,
-                                   const std::uint64_t frame,
-                                   const std::uint64_t currentOutputFrame) noexcept
+                                   const std::uint64_t frame) noexcept
 {
     if (samples == nullptr || count != inferenceQuantumSamples || frame >= submittedFrame)
     {
         alignmentErrors.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    if (frame < currentOutputFrame)
+    const auto deadline = frame * inferenceQuantumSamples + transportLatencySamples - fadeSamples;
+    const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
+    if (sampleClock > deadline || committedFrameTags[slot] == frame)
     {
         lateResults.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
     if (wetFrameTags[slot] == frame)
     {
         alignmentErrors.fetch_add(1, std::memory_order_relaxed);
@@ -446,12 +461,10 @@ bool RaveAudioEngine::publishResultForTesting(const float* const samples,
                                               const std::size_t count,
                                               const std::uint64_t frame) noexcept
 {
-    const auto outputFrame = sampleClock >= transportLatencySamples
-        ? (sampleClock - transportLatencySamples) / inferenceQuantumSamples : 0;
-    return commitResult(samples, count, frame, outputFrame);
+    return commitResult(samples, count, frame);
 }
 
-void RaveAudioEngine::drainResults(const std::uint64_t currentOutputFrame) noexcept
+void RaveAudioEngine::drainResults() noexcept
 {
     for (std::size_t drained = 0; drained < timelineFrameCount; ++drained)
     {
@@ -459,8 +472,44 @@ void RaveAudioEngine::drainResults(const std::uint64_t currentOutputFrame) noexc
         std::uint64_t frame = 0;
         if (!inferenceWorker.tryReceive(receiveFrame.data(), receiveFrame.size(), count, &frame))
             break;
-        static_cast<void>(commitResult(receiveFrame.data(), count, frame, currentOutputFrame));
+        static_cast<void>(commitResult(receiveFrame.data(), count, frame));
     }
+}
+
+void RaveAudioEngine::commitDueFrame() noexcept
+{
+    const auto deadline = nextCommitFrame * inferenceQuantumSamples
+        + transportLatencySamples - fadeSamples;
+    if (sampleClock != deadline)
+        return;
+    drainResults();
+    const auto slot = static_cast<std::size_t>(nextCommitFrame % timelineFrameCount);
+    committedFrameTags[slot] = nextCommitFrame;
+    committedWet[slot] = wetFrameTags[slot] == nextCommitFrame;
+    if (!committedWet[slot] && eligibleFrameTags[slot] == nextCommitFrame)
+        missedDeadlines.fetch_add(1, std::memory_order_relaxed);
+    ++nextCommitFrame;
+}
+
+float RaveAudioEngine::availabilityFor(const std::uint64_t delayedClock) const noexcept
+{
+    const auto frame = delayedClock / inferenceQuantumSamples;
+    const auto offset = static_cast<std::size_t>(delayedClock % inferenceQuantumSamples);
+    const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
+    if (committedFrameTags[slot] != frame || !committedWet[slot])
+        return 0.0f;
+
+    const bool previousWet = frame > 0
+        && committedFrameTags[static_cast<std::size_t>((frame - 1) % timelineFrameCount)] == frame - 1
+        && committedWet[static_cast<std::size_t>((frame - 1) % timelineFrameCount)];
+    const auto nextSlot = static_cast<std::size_t>((frame + 1) % timelineFrameCount);
+    const bool nextWet = committedFrameTags[nextSlot] == frame + 1 && committedWet[nextSlot];
+    if (!previousWet && offset < fadeSamples)
+        return static_cast<float>(offset) / static_cast<float>(fadeSamples);
+    if (!nextWet && offset >= inferenceQuantumSamples - fadeSamples)
+        return static_cast<float>(inferenceQuantumSamples - offset)
+            / static_cast<float>(fadeSamples);
+    return 1.0f;
 }
 
 RaveAudioEngine::RuntimeTelemetry RaveAudioEngine::runtimeTelemetry() const noexcept
@@ -502,6 +551,13 @@ void RaveAudioEngine::processAudio(
             }
         return;
     }
+    if (!runtimePrepared.load(std::memory_order_acquire))
+    {
+        for (int channel = 0; channel < numOutputChannels; ++channel)
+            if (outputChannelData[channel] != nullptr)
+                juce::FloatVectorOperations::clear(outputChannelData[channel], numSamples);
+        return;
+    }
     if (numOutputChannels != channels)
     {
         for (int channel = 0; channel < numOutputChannels; ++channel)
@@ -513,6 +569,7 @@ void RaveAudioEngine::processAudio(
 
     for (int sample = 0; sample < numSamples; ++sample, ++sampleClock)
     {
+        commitDueFrame();
         const auto dryIndex = static_cast<std::size_t>(sampleClock % dryRingSamples);
         for (int channel = 0; channel < channels; ++channel)
         {
@@ -529,24 +586,18 @@ void RaveAudioEngine::processAudio(
         if ((sampleClock + 1) % inferenceQuantumSamples == 0)
         {
             const auto frame = submittedFrame++;
-            if (inferenceWorker.isRunning()
-                && !inferenceWorker.trySubmit(inputFrame.data(), inferenceQuantumSamples, frame))
+            if (inferenceWorker.isRunning())
             {
-                // Queue-drop telemetry is owned by the worker. No timeline
-                // state is changed: this frame deterministically falls back.
+                const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
+                eligibleFrameTags[slot] = frame;
+                static_cast<void>(inferenceWorker.trySubmit(
+                    inputFrame.data(), inferenceQuantumSamples, frame));
             }
         }
 
         const bool delayed = sampleClock >= transportLatencySamples;
         const auto delayedClock = delayed ? sampleClock - transportLatencySamples : 0;
         const auto outputFrame = delayedClock / inferenceQuantumSamples;
-        if (delayed && delayedClock % inferenceQuantumSamples == 0)
-        {
-            drainResults(outputFrame);
-            const auto slot = static_cast<std::size_t>(outputFrame % timelineFrameCount);
-            if (inferenceWorker.isRunning() && wetFrameTags[slot] != outputFrame)
-                missedDeadlines.fetch_add(1, std::memory_order_relaxed);
-        }
 
         const auto targetMix = dryWet();
         if (smoothedDryWet < targetMix)
@@ -555,13 +606,10 @@ void RaveAudioEngine::processAudio(
             smoothedDryWet = std::max(targetMix, smoothedDryWet - smoothingStep);
 
         const auto wetSlot = static_cast<std::size_t>(outputFrame % timelineFrameCount);
-        const bool wetAvailable = delayed && wetFrameTags[wetSlot] == outputFrame;
-        const auto availabilityTarget = wetAvailable ? 1.0f : 0.0f;
-        if (availability < availabilityTarget)
-            availability = std::min(availabilityTarget, availability + smoothingStep);
-        else
-            availability = std::max(availabilityTarget, availability - smoothingStep);
-        const auto wetGain = smoothedDryWet * availability;
+        const auto wetAvailable = delayed && committedFrameTags[wetSlot] == outputFrame
+            && committedWet[wetSlot];
+        const auto wetGain = smoothedDryWet
+            * (delayed ? availabilityFor(delayedClock) : 0.0f);
 
         for (int channel = 0; channel < channels; ++channel)
         {

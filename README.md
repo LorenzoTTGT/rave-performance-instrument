@@ -10,13 +10,17 @@ The instrument should let a performer load a model, route audio through it, expl
 
 Audio is accumulated into 2048-sample inference frames and rendered on a
 model-independent 4096-sample timeline. The plugin reports 4096 samples in all
-model and overload states. Missing results use exactly aligned delayed dry;
-dry/wet and availability transitions are independently faded over 5 ms. This
+model and overload states. Each frame commits wet or aligned delayed dry once, 5 ms before playback;
+exact-deadline results are accepted and later results cannot upgrade it.
+Wet-to-dry fades during that pre-playback window, while dry-to-wet fades over
+the first 5 ms of playback. Release invalidates readiness and all timeline
+history before any detached callback can render it. Dry/wet target smoothing
+remains independent. This
 contractual transport latency does not measure intrinsic model receptive-field
 or perceptual latency.
 
-Runtime counters reset on prepare. Deadline misses count frames absent at their
-playback boundary; queue drops combine worker input/output enqueue failures;
+Runtime counters reset on prepare. Deadline misses count eligible frames absent
+at their pre-playback commitment deadline; queue drops combine worker input/output enqueue failures;
 late results arrived after their boundary; processing/reset errors count
 backend failures; alignment errors count malformed, duplicate, impossible
 future results, and invalid layouts. Lifecycle status separately remains the

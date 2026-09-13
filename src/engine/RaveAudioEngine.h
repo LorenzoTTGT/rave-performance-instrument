@@ -188,11 +188,12 @@ private:
     // for non-realtime pollers. lifecycleMutex must be held by the caller.
     void setLifecycleStateLocked(std::string diagnostic, bool modelUsable);
 
-    void drainResults(std::uint64_t currentOutputFrame) noexcept;
+    void drainResults() noexcept;
+    void commitDueFrame() noexcept;
     [[nodiscard]] bool commitResult(const float* samples,
                                     std::size_t sampleCount,
-                                    std::uint64_t frame,
-                                    std::uint64_t currentOutputFrame) noexcept;
+                                    std::uint64_t frame) noexcept;
+    [[nodiscard]] float availabilityFor(std::uint64_t delayedClock) const noexcept;
 
     InferenceWorker inferenceWorker;
     static constexpr std::size_t timelineFrameCount = 8;
@@ -202,12 +203,17 @@ private:
     std::vector<float> receiveFrame;
     std::vector<float> wetTimeline;
     std::vector<std::uint64_t> wetFrameTags;
+    std::vector<std::uint64_t> committedFrameTags;
+    std::vector<std::uint64_t> eligibleFrameTags;
+    std::vector<bool> committedWet;
     std::atomic<float> dryWetValue { 0.0f };
     float smoothedDryWet = 0.0f;
-    float availability = 0.0f;
     float smoothingStep = 1.0f;
+    std::size_t fadeSamples = 1;
     std::uint64_t sampleClock = 0;
     std::uint64_t submittedFrame = 0;
+    std::uint64_t nextCommitFrame = 0;
+    std::atomic<bool> runtimePrepared { false };
     std::atomic<std::size_t> modelLatentDimensionCount { 0 };
     std::atomic<std::uint64_t> missedDeadlines { 0 };
     std::atomic<std::uint64_t> alignmentErrors { 0 };
