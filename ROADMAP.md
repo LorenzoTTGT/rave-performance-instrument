@@ -165,3 +165,11 @@ After the dependable transform milestone:
 - Optional process-isolated inference for unattended installations.
 
 Explicitly deferred: multiple simultaneous models and arbitrary graph editing.
+
+### RAVE-03 — Stable realtime transport
+
+- [x] Fixed 2048-sample inference framing across callback partitions
+- [x] Model-independent 4096-sample delayed-dry/wet timeline and plugin latency
+- [x] Deadline fallback and 5 ms dry/wet plus availability smoothing
+- [x] Bounded lock-free runtime counters separate from lifecycle usability
+- [ ] Real-model and VST3/AU host qualification on the target machines

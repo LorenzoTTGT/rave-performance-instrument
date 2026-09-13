@@ -400,12 +400,12 @@ void testRuntimeConfigurationReporting()
 
     engine.prepare(44100.0, 16, 1);
     configuration = engine.runtimeConfiguration();
-    require(configuration.sampleRate == 44100.0 && configuration.maximumBlockSize == 16,
+    require(configuration.sampleRate == 44100.0 && configuration.maximumBlockSize == 2048,
             "prepared configuration reported to qualification");
 
     engine.release();
     configuration = engine.runtimeConfiguration();
-    require(configuration.sampleRate == 44100.0 && configuration.maximumBlockSize == 16,
+    require(configuration.sampleRate == 44100.0 && configuration.maximumBlockSize == 2048,
             "last prepared configuration retained after release");
 }
 
@@ -713,7 +713,7 @@ void testActivationCommitIsSerializedAgainstConcurrentReprepare()
     require(log[2] == "reprepare-done", "concurrent reprepare completed last");
 
     const auto configuration = engine.runtimeConfiguration();
-    require(configuration.sampleRate == 44100.0 && configuration.maximumBlockSize == 4,
+    require(configuration.sampleRate == 44100.0 && configuration.maximumBlockSize == 2048,
             "serialized reprepare publishes its configuration");
     require(engine.hasUsableModel(), "candidate remains usable after the reprepare");
 
@@ -728,7 +728,7 @@ void testActivationAfterReleaseChecksResetAndStart()
 
     // Releasing the callback must not erase the known host configuration.
     const auto configuration = engine.runtimeConfiguration();
-    require(configuration.sampleRate == 48000.0 && configuration.maximumBlockSize == 4,
+    require(configuration.sampleRate == 48000.0 && configuration.maximumBlockSize == 2048,
             "known configuration survives release");
 
     // A candidate whose reset fails is rejected truthfully even after release.

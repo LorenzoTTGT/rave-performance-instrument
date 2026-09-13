@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -44,7 +45,7 @@ ModelRuntimeConfiguration RaveAudioEngine::runtimeConfiguration() const
     const std::scoped_lock lock(lifecycleMutex);
     if (!configurationKnown)
         return {};
-    return { configuredSampleRate, callbackMaximumBlockSize.load(std::memory_order_relaxed) };
+    return { configuredSampleRate, inferenceQuantumSamples };
 }
 
 std::string RaveAudioEngine::lifecycleDiagnostic() const
@@ -116,7 +117,7 @@ bool RaveAudioEngine::activateModelBackend(ModelBackendPtr candidate, std::strin
     // lifecycle ownership and reused verbatim for the commit below.
     const ModelRuntimeConfiguration snapshot {
         configuredSampleRate,
-        callbackMaximumBlockSize.load(std::memory_order_relaxed)
+        inferenceQuantumSamples
     };
     if (const auto configurationError = checkModelConfiguration(*candidate, snapshot);
         !configurationError.empty())
@@ -313,9 +314,14 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         startError->clear();
 
     inferenceWorker.stop();
-    nextSequence = 1;
+    sampleClock = 0;
+    submittedFrame = 0;
+    smoothedDryWet = dryWet();
+    availability = 0.0f;
     missedDeadlines.store(0, std::memory_order_relaxed);
     alignmentErrors.store(0, std::memory_order_relaxed);
+    lateResults.store(0, std::memory_order_relaxed);
+    renderedSamples.store(0, std::memory_order_relaxed);
 
     configurationKnown = true;
     configuredSampleRate = sampleRate;
@@ -328,19 +334,12 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
     callbackOutputChannels.store(configuredOutputChannels, std::memory_order_relaxed);
 
     constexpr std::size_t inferenceQueueCapacity = 4;
-    constexpr std::size_t dryQueueCapacity = inferenceQueueCapacity * 3;
-    dryBlockQueue.prepare(static_cast<std::size_t>(configuredOutputChannels),
-                          blockSize,
-                          dryQueueCapacity);
-    wetBuffer.assign(blockSize, 0.0f);
-    delayedDryBuffer.assign(blockSize * static_cast<std::size_t>(configuredOutputChannels), 0.0f);
-    dryInputPointers.assign(static_cast<std::size_t>(configuredOutputChannels), nullptr);
-    dryOutputPointers.resize(static_cast<std::size_t>(configuredOutputChannels));
-    for (int channel = 0; channel < configuredOutputChannels; ++channel)
-    {
-        dryOutputPointers[static_cast<std::size_t>(channel)] =
-            delayedDryBuffer.data() + static_cast<std::size_t>(channel) * blockSize;
-    }
+    dryTimeline.assign(static_cast<std::size_t>(configuredOutputChannels) * dryRingSamples, 0.0f);
+    inputFrame.assign(inferenceQuantumSamples, 0.0f);
+    receiveFrame.assign(inferenceQuantumSamples, 0.0f);
+    wetTimeline.assign(timelineFrameCount * inferenceQuantumSamples, 0.0f);
+    wetFrameTags.assign(timelineFrameCount, std::numeric_limits<std::uint64_t>::max());
+    smoothingStep = static_cast<float>(1.0 / std::max(1.0, sampleRate * 0.005));
 
     if (modelInstalled)
     {
@@ -349,7 +348,7 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         // before starting; otherwise keep it installed, record the lifecycle
         // diagnostic, and report bounded dry pass-through.
         if (const auto configurationError =
-                checkModelConfiguration(*installed, { sampleRate, blockSize });
+                checkModelConfiguration(*installed, { sampleRate, inferenceQuantumSamples });
             !configurationError.empty())
         {
             if (startError != nullptr)
@@ -362,7 +361,7 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
 
         try
         {
-            inferenceWorker.prepare(sampleRate, blockSize, inferenceQueueCapacity);
+            inferenceWorker.prepare(sampleRate, inferenceQuantumSamples, inferenceQueueCapacity);
         }
         catch (const std::exception& exception)
         {
@@ -416,6 +415,50 @@ void RaveAudioEngine::release() noexcept
     setLifecycleStateLocked({}, false);
 }
 
+void RaveAudioEngine::drainResults(const std::uint64_t currentOutputFrame) noexcept
+{
+    // A fixed bound prevents a producer backlog from making callback work
+    // unbounded. Every result carries its immutable input-frame identity.
+    for (std::size_t drained = 0; drained < timelineFrameCount; ++drained)
+    {
+        std::size_t count = 0;
+        std::uint64_t frame = 0;
+        if (!inferenceWorker.tryReceive(receiveFrame.data(), receiveFrame.size(), count, &frame))
+            break;
+        if (count != inferenceQuantumSamples || frame >= submittedFrame)
+        {
+            alignmentErrors.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        if (frame < currentOutputFrame)
+        {
+            lateResults.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        const auto slot = static_cast<std::size_t>(frame % timelineFrameCount);
+        if (wetFrameTags[slot] == frame)
+        {
+            alignmentErrors.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        std::copy(receiveFrame.begin(), receiveFrame.end(),
+                  wetTimeline.begin() + static_cast<std::ptrdiff_t>(slot * inferenceQuantumSamples));
+        wetFrameTags[slot] = frame;
+    }
+}
+
+RaveAudioEngine::RuntimeTelemetry RaveAudioEngine::runtimeTelemetry() const noexcept
+{
+    return { transportLatencySamples,
+             renderedSamples.load(std::memory_order_relaxed) >= transportLatencySamples,
+             missedDeadlines.load(std::memory_order_relaxed),
+             inferenceWorker.droppedInputBlockCount() + inferenceWorker.droppedOutputBlockCount(),
+             lateResults.load(std::memory_order_relaxed),
+             inferenceWorker.processingErrorCount(),
+             inferenceWorker.resetErrorCount(),
+             alignmentErrors.load(std::memory_order_relaxed) };
+}
+
 void RaveAudioEngine::processAudio(
     const float* const* inputChannelData,
     const int numInputChannels,
@@ -423,99 +466,104 @@ void RaveAudioEngine::processAudio(
     const int numOutputChannels,
     const int numSamples) noexcept
 {
-    // The real-time path never takes lifecycleMutex; it reads single atomic
-    // copies published under the mutex and falls back to dry rendering while
-    // lifecycle work runs.
-    const auto maxBlockSize = callbackMaximumBlockSize.load(std::memory_order_relaxed);
-    const auto outputChannels = callbackOutputChannels.load(std::memory_order_relaxed);
-    if (!inferenceWorker.isRunning() || numInputChannels <= 0 || inputChannelData == nullptr
-        || inputChannelData[0] == nullptr || numSamples <= 0
-        || static_cast<std::size_t>(numSamples) > maxBlockSize
-        || numOutputChannels != outputChannels)
+    if (numSamples <= 0 || outputChannelData == nullptr)
+        return;
+
+    const auto channels = callbackOutputChannels.load(std::memory_order_relaxed);
+    if (dryTimeline.empty())
     {
-        renderDry(inputChannelData,
-                  numInputChannels,
-                  outputChannelData,
-                  numOutputChannels,
-                  numSamples);
+        // Before the first prepare there is no declared transport; preserve
+        // the legacy safe pass-through. Every prepared state uses the delay.
+        for (int channel = 0; channel < numOutputChannels; ++channel)
+            if (outputChannelData[channel] != nullptr)
+            {
+                const auto* input = inputChannelData != nullptr && channel < numInputChannels
+                    ? inputChannelData[channel] : nullptr;
+                if (input != nullptr)
+                    juce::FloatVectorOperations::copy(outputChannelData[channel], input, numSamples);
+                else
+                    juce::FloatVectorOperations::clear(outputChannelData[channel], numSamples);
+            }
         return;
     }
-
-    const auto sequence = nextSequence++;
-    const auto submitted = inferenceWorker.trySubmit(
-        inputChannelData[0], static_cast<std::size_t>(numSamples), sequence);
-
-    if (submitted)
+    if (numOutputChannels != channels)
     {
-        for (int channel = 0; channel < outputChannels; ++channel)
-        {
-            dryInputPointers[static_cast<std::size_t>(channel)] =
-                channel < numInputChannels ? inputChannelData[channel] : nullptr;
-        }
-
-        if (!dryBlockQueue.tryPush(dryInputPointers.data(),
-                                   dryInputPointers.size(),
-                                   static_cast<std::size_t>(numSamples),
-                                   sequence))
-            alignmentErrors.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    std::size_t wetSampleCount = 0;
-    std::uint64_t wetSequence = 0;
-    if (!inferenceWorker.tryReceive(
-            wetBuffer.data(), wetBuffer.size(), wetSampleCount, &wetSequence))
-    {
-        missedDeadlines.fetch_add(1, std::memory_order_relaxed);
-        renderDry(inputChannelData,
-                  numInputChannels,
-                  outputChannelData,
-                  numOutputChannels,
-                  numSamples);
-        return;
-    }
-
-    std::size_t drySampleCount = 0;
-    std::uint64_t drySequence = 0;
-    bool foundMatchingDryBlock = false;
-    while (dryBlockQueue.tryPop(dryOutputPointers.data(),
-                                dryOutputPointers.size(),
-                                maxBlockSize,
-                                drySampleCount,
-                                &drySequence))
-    {
-        if (drySequence == wetSequence)
-        {
-            foundMatchingDryBlock = true;
-            break;
-        }
-        if (drySequence > wetSequence)
-            break;
-    }
-
-    if (!foundMatchingDryBlock || wetSampleCount != static_cast<std::size_t>(numSamples)
-        || drySampleCount != wetSampleCount)
-    {
+        for (int channel = 0; channel < numOutputChannels; ++channel)
+            if (outputChannelData[channel] != nullptr)
+                juce::FloatVectorOperations::clear(outputChannelData[channel], numSamples);
         alignmentErrors.fetch_add(1, std::memory_order_relaxed);
-        renderDry(inputChannelData,
-                  numInputChannels,
-                  outputChannelData,
-                  numOutputChannels,
-                  numSamples);
         return;
     }
 
-    const auto wetGain = dryWet();
-    const auto dryGain = 1.0f - wetGain;
-    for (int channel = 0; channel < numOutputChannels; ++channel)
+    for (int sample = 0; sample < numSamples; ++sample, ++sampleClock)
     {
-        auto* const output = outputChannelData[channel];
-        if (output == nullptr)
-            continue;
+        const auto dryIndex = static_cast<std::size_t>(sampleClock % dryRingSamples);
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const auto* input = inputChannelData != nullptr && channel < numInputChannels
+                ? inputChannelData[channel] : nullptr;
+            dryTimeline[static_cast<std::size_t>(channel) * dryRingSamples + dryIndex]
+                = input != nullptr ? input[sample] : 0.0f;
+        }
 
-        const auto* const dry = dryOutputPointers[static_cast<std::size_t>(channel)];
-        for (int sample = 0; sample < numSamples; ++sample)
-            output[sample] = dry[sample] * dryGain + wetBuffer[static_cast<std::size_t>(sample)] * wetGain;
+        inputFrame[static_cast<std::size_t>(sampleClock % inferenceQuantumSamples)] =
+            inputChannelData != nullptr && numInputChannels > 0 && inputChannelData[0] != nullptr
+                ? inputChannelData[0][sample] : 0.0f;
+
+        if ((sampleClock + 1) % inferenceQuantumSamples == 0)
+        {
+            const auto frame = submittedFrame++;
+            if (inferenceWorker.isRunning()
+                && !inferenceWorker.trySubmit(inputFrame.data(), inferenceQuantumSamples, frame))
+            {
+                // Queue-drop telemetry is owned by the worker. No timeline
+                // state is changed: this frame deterministically falls back.
+            }
+        }
+
+        const bool delayed = sampleClock >= transportLatencySamples;
+        const auto delayedClock = delayed ? sampleClock - transportLatencySamples : 0;
+        const auto outputFrame = delayedClock / inferenceQuantumSamples;
+        if (delayed && delayedClock % inferenceQuantumSamples == 0)
+        {
+            drainResults(outputFrame);
+            const auto slot = static_cast<std::size_t>(outputFrame % timelineFrameCount);
+            if (inferenceWorker.isRunning() && wetFrameTags[slot] != outputFrame)
+                missedDeadlines.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        const auto targetMix = dryWet();
+        if (smoothedDryWet < targetMix)
+            smoothedDryWet = std::min(targetMix, smoothedDryWet + smoothingStep);
+        else
+            smoothedDryWet = std::max(targetMix, smoothedDryWet - smoothingStep);
+
+        const auto wetSlot = static_cast<std::size_t>(outputFrame % timelineFrameCount);
+        const bool wetAvailable = delayed && wetFrameTags[wetSlot] == outputFrame;
+        const auto availabilityTarget = wetAvailable ? 1.0f : 0.0f;
+        if (availability < availabilityTarget)
+            availability = std::min(availabilityTarget, availability + smoothingStep);
+        else
+            availability = std::max(availabilityTarget, availability - smoothingStep);
+        const auto wetGain = smoothedDryWet * availability;
+
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            auto* output = outputChannelData[channel];
+            if (output == nullptr)
+                continue;
+            const auto dry = delayed
+                ? dryTimeline[static_cast<std::size_t>(channel) * dryRingSamples
+                              + static_cast<std::size_t>(delayedClock % dryRingSamples)]
+                : 0.0f;
+            const auto wet = wetAvailable
+                ? wetTimeline[wetSlot * inferenceQuantumSamples
+                              + static_cast<std::size_t>(delayedClock % inferenceQuantumSamples)]
+                : dry;
+            output[sample] = dry + (wet - dry) * wetGain;
+        }
     }
+    renderedSamples.store(sampleClock, std::memory_order_relaxed);
 }
 
 void RaveAudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* const device)
@@ -551,25 +599,5 @@ void RaveAudioEngine::audioDeviceIOCallbackWithContext(
                  numSamples);
 }
 
-void RaveAudioEngine::renderDry(const float* const* inputChannelData,
-                                const int numInputChannels,
-                                float* const* outputChannelData,
-                                const int numOutputChannels,
-                                const int numSamples) noexcept
-{
-    for (int channel = 0; channel < numOutputChannels; ++channel)
-    {
-        auto* const output = outputChannelData[channel];
-        if (output == nullptr)
-            continue;
 
-        const auto* const input = inputChannelData != nullptr && channel < numInputChannels
-            ? inputChannelData[channel]
-            : nullptr;
-        if (input == nullptr)
-            juce::FloatVectorOperations::clear(output, numSamples);
-        else
-            juce::FloatVectorOperations::copy(output, input, numSamples);
-    }
-}
 } // namespace rave

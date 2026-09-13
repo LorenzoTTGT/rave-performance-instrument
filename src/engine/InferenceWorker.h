@@ -61,6 +61,7 @@ public:
     [[nodiscard]] std::uint64_t droppedInputBlockCount() const noexcept;
     [[nodiscard]] std::uint64_t droppedOutputBlockCount() const noexcept;
     [[nodiscard]] std::uint64_t processingErrorCount() const noexcept;
+    [[nodiscard]] std::uint64_t resetErrorCount() const noexcept;
 
     // Test-only seam fired on the starting thread immediately before the
     // worker thread is constructed so tests can exercise thread-start failure
@@ -89,5 +90,6 @@ private:
     std::atomic<std::uint64_t> droppedInputs { 0 };
     std::atomic<std::uint64_t> droppedOutputs { 0 };
     std::atomic<std::uint64_t> processingErrors { 0 };
+    std::atomic<std::uint64_t> resetErrors { 0 };
 };
 } // namespace rave

@@ -72,6 +72,7 @@ void RavePluginProcessor::prepareToPlay(const double sampleRate, const int sampl
     engine.prepare(sampleRate,
                    static_cast<std::size_t>(std::max(1, samplesPerBlock)),
                    getTotalNumOutputChannels());
+    setLatencySamples(static_cast<int>(rave::RaveAudioEngine::transportLatencySamples));
     // Surface an incompatible reprepare or failing checked reset/start in the
     // visible status instead of leaving the previous active claim up.
     refreshLifecycleStatus();

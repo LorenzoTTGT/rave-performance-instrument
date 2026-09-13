@@ -106,8 +106,24 @@ public:
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept;
     [[nodiscard]] float latentControl(std::size_t index) const noexcept;
     [[nodiscard]] bool setLatentControl(std::size_t index, float value) noexcept;
+    static constexpr std::size_t inferenceQuantumSamples = 2048;
+    static constexpr std::size_t transportLatencySamples = 4096;
+
+    struct RuntimeTelemetry
+    {
+        std::size_t latencySamples = transportLatencySamples;
+        bool transportReady = false;
+        std::uint64_t deadlineMisses = 0;
+        std::uint64_t queueDrops = 0;
+        std::uint64_t lateResults = 0;
+        std::uint64_t processingErrors = 0;
+        std::uint64_t resetErrors = 0;
+        std::uint64_t alignmentErrors = 0;
+    };
+
     [[nodiscard]] std::uint64_t missedInferenceDeadlineCount() const noexcept;
     [[nodiscard]] std::uint64_t alignmentErrorCount() const noexcept;
+    [[nodiscard]] RuntimeTelemetry runtimeTelemetry() const noexcept;
 
     // Device-independent lifecycle used by standalone and plugin adapters.
     // Device-lifecycle reprepares are best-effort: on every prepare the
@@ -165,23 +181,27 @@ private:
     // for non-realtime pollers. lifecycleMutex must be held by the caller.
     void setLifecycleStateLocked(std::string diagnostic, bool modelUsable);
 
-    void renderDry(const float* const* inputChannelData,
-                   int numInputChannels,
-                   float* const* outputChannelData,
-                   int numOutputChannels,
-                   int numSamples) noexcept;
+    void drainResults(std::uint64_t currentOutputFrame) noexcept;
 
     InferenceWorker inferenceWorker;
-    AudioBlockQueue dryBlockQueue;
-    std::vector<float> wetBuffer;
-    std::vector<float> delayedDryBuffer;
-    std::vector<const float*> dryInputPointers;
-    std::vector<float*> dryOutputPointers;
+    static constexpr std::size_t timelineFrameCount = 8;
+    static constexpr std::size_t dryRingSamples = transportLatencySamples * 2;
+    std::vector<float> dryTimeline;
+    std::vector<float> inputFrame;
+    std::vector<float> receiveFrame;
+    std::vector<float> wetTimeline;
+    std::vector<std::uint64_t> wetFrameTags;
     std::atomic<float> dryWetValue { 0.0f };
+    float smoothedDryWet = 0.0f;
+    float availability = 0.0f;
+    float smoothingStep = 1.0f;
+    std::uint64_t sampleClock = 0;
+    std::uint64_t submittedFrame = 0;
     std::atomic<std::size_t> modelLatentDimensionCount { 0 };
     std::atomic<std::uint64_t> missedDeadlines { 0 };
     std::atomic<std::uint64_t> alignmentErrors { 0 };
-    std::uint64_t nextSequence = 1;
+    std::atomic<std::uint64_t> lateResults { 0 };
+    std::atomic<std::uint64_t> renderedSamples { 0 };
 
     // Single-value copies published under lifecycleMutex for the lock-free
     // audio callback; one atomic store per field cannot tear, so no multi-

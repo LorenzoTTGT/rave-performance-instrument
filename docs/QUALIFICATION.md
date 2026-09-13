@@ -205,3 +205,13 @@ Every benchmark or host report must include:
 - Callback/inference count, p50/p95/p99/max timing, measured/reported latency, queue/drop/error counters, xruns, CPU, and memory.
 - Pass/fail against each applicable threshold.
 - Known omissions and whether the run used synthetic or real audio.
+
+## RAVE-03 fixed-frame qualification
+
+The backend qualification contract is exactly 48 kHz / 2048 samples. When
+`RAVE_TEST_MODEL_PATH` is set, the existing SHA-256-gated backend smoke runs
+that exact frame size; the fixture remains local and must not be committed.
+The engine transport is independently fixed at 4096 samples and is not a
+measurement of a model's intrinsic receptive-field latency. Host qualification
+must confirm the processor continues to report 4096 through model activation,
+overload, release, and reprepare.

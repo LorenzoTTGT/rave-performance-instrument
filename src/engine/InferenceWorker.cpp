@@ -51,6 +51,7 @@ void InferenceWorker::prepare(const double sampleRate,
     droppedInputs.store(0, std::memory_order_relaxed);
     droppedOutputs.store(0, std::memory_order_relaxed);
     processingErrors.store(0, std::memory_order_relaxed);
+    resetErrors.store(0, std::memory_order_relaxed);
     wakeSequence.store(0, std::memory_order_relaxed);
 
     if (backend != nullptr)
@@ -89,6 +90,7 @@ bool InferenceWorker::start(std::string* const startError)
     }
     if (!resetSucceeded)
     {
+        resetErrors.fetch_add(1, std::memory_order_relaxed);
         // A backend whose reset fails must never run with unknown state; the
         // caller decides between verified rollback and bounded dry audio.
         if (startError != nullptr)
@@ -158,8 +160,9 @@ bool InferenceWorker::trySubmit(const float* const samples,
         return false;
     }
 
+    // The realtime producer must not notify a condition variable. The worker
+    // polls the bounded SPSC queue; stop() remains the only notifier.
     wakeSequence.fetch_add(1, std::memory_order_release);
-    wakeCondition.notify_one();
     return true;
 }
 
@@ -209,6 +212,11 @@ std::uint64_t InferenceWorker::droppedOutputBlockCount() const noexcept
 std::uint64_t InferenceWorker::processingErrorCount() const noexcept
 {
     return processingErrors.load(std::memory_order_relaxed);
+}
+
+std::uint64_t InferenceWorker::resetErrorCount() const noexcept
+{
+    return resetErrors.load(std::memory_order_relaxed);
 }
 
 void InferenceWorker::run()
