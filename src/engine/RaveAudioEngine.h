@@ -19,6 +19,15 @@ namespace rave
 class RaveAudioEngine final : public juce::AudioIODeviceCallback
 {
 public:
+    struct LifecycleStatusSnapshot
+    {
+        std::uint64_t revision = 0;
+        bool modelInstalled = false;
+        bool modelUsable = false;
+        std::string diagnostic;
+        std::size_t latentDimensionCount = 0;
+    };
+
     // Replace models only while the audio device callback is stopped.
     void setModelBackend(ModelBackendPtr backend);
 
@@ -71,6 +80,10 @@ public:
     // Monotonic counter bumped whenever the lifecycle diagnostic or usability
     // state changes, so non-realtime status surfaces can poll cheaply.
     [[nodiscard]] std::uint64_t lifecycleRevision() const noexcept;
+
+    // Coherent non-realtime presentation state captured under lifecycle
+    // ownership. Status surfaces use this instead of racing independent reads.
+    [[nodiscard]] LifecycleStatusSnapshot lifecycleStatusSnapshot() const;
 
     // The host configuration models are qualified against, or an unset
     // configuration before the first prepare. The configuration is known once

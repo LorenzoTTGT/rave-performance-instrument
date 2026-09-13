@@ -942,6 +942,8 @@ void testFailedRollbackWithLatentPreviousClearsWorkerLatentState()
             "candidate failure triggers a rollback that itself fails");
     require(!engine.hasModelBackend(), "abandoned backend is not installed");
     require(engine.latentDimensionCount() == 0, "engine latent dimension count cleared");
+    require(rave::standaloneLatentControlCount(engine.lifecycleStatusSnapshot()) == 0,
+            "standalone presentation removes controls after backend abandonment");
     require(engine.latentControl(0) == 0.0f && engine.latentControl(1) == 0.0f,
             "worker latent storage cleared with the abandoned backend");
     require(engine.lifecycleDiagnostic().find("no usable model") != std::string::npos
@@ -1027,6 +1029,16 @@ void testCandidateFailureStatusUsesPostReattachState()
                                                    {},
                                                    engine.latentDimensionCount(),
                                                    "Audio pass-through ready — no model loaded");
+    const auto snapshot = engine.lifecycleStatusSnapshot();
+    const rave::RaveAudioEngine::LifecycleStatusSnapshot abandonedSnapshot {
+        snapshot.revision, false, false, "dry pass-through", 2
+    };
+    require(rave::standaloneLatentControlCount(abandonedSnapshot) == 0,
+            "abandoned model removes stale standalone latent controls even from stale metadata");
+    require(snapshot.revision == engine.lifecycleRevision()
+                && snapshot.modelInstalled == engine.hasModelBackend()
+                && snapshot.modelUsable == engine.hasUsableModel(),
+            "unchanged lifecycle is represented consistently by the coherent snapshot");
     const auto candidateCause = rave::candidateFailureCause(failureReason);
     const auto combined = juce::String("Model activation failed: ")
         + juce::String(candidateCause)
@@ -1047,6 +1059,24 @@ void testCandidateFailureStatusUsesPostReattachState()
 
 void testLifecycleStatusFormatterCoversAllStates()
 {
+    require(rave::candidateFailureCause("backend; detail; previous model retained")
+                == "backend; detail",
+            "only the exact retained suffix is removed");
+    require(rave::candidateFailureCause(";leading; internal diagnostic")
+                == ";leading; internal diagnostic",
+            "arbitrary leading and internal semicolons are preserved");
+    require(rave::candidateFailureCause("; previous model retained").empty(),
+            "empty candidate cause before an exact suffix is preserved");
+    require(rave::candidateFailureCause("").empty(), "empty diagnostic stays empty");
+    require(rave::candidateFailureCause("backend; previous model retained; extra")
+                == "backend; previous model retained; extra",
+            "recognized text that is not an exact suffix is preserved");
+    require(rave::candidateFailureCause(
+                "backend; inner; previous model could not be restarted: reset failed"
+                " — remaining in bounded dry pass-through")
+                == "backend; inner",
+            "variable rollback detail is removed without truncating internal semicolons");
+
     const std::string diagnostic("Model sample rate 48000 Hz does not match the active 44100 Hz "
                                  "configuration; the installed model stays silent — bounded dry "
                                  "pass-through");

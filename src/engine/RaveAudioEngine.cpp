@@ -58,6 +58,16 @@ std::uint64_t RaveAudioEngine::lifecycleRevision() const noexcept
     return lifecycleRevisionValue.load(std::memory_order_acquire);
 }
 
+RaveAudioEngine::LifecycleStatusSnapshot RaveAudioEngine::lifecycleStatusSnapshot() const
+{
+    const std::scoped_lock lock(lifecycleMutex);
+    return { lifecycleRevisionValue.load(std::memory_order_relaxed),
+             modelInstalled,
+             modelUsable,
+             lifecycleDiagnosticValue,
+             modelLatentDimensionCount.load(std::memory_order_relaxed) };
+}
+
 void RaveAudioEngine::setLifecycleStateLocked(std::string diagnostic, const bool modelUsableNew)
 {
     // lifecycleMutex must be held by the caller. The revision is bumped

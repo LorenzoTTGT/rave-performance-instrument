@@ -185,16 +185,16 @@ private:
     // silent. Runs on the timer (message thread).
     void refreshLifecycleStatus()
     {
-        const auto revision = engine.lifecycleRevision();
-        if (revision == lastLifecycleRevision)
+        const auto snapshot = engine.lifecycleStatusSnapshot();
+        if (snapshot.revision == lastLifecycleRevision)
             return;
-        lastLifecycleRevision = revision;
+        lastLifecycleRevision = snapshot.revision;
 
-        status.setText(rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
-                                                 engine.hasUsableModel(),
-                                                 engine.hasModelBackend(),
+        status.setText(rave::lifecycleStatusText(snapshot.diagnostic,
+                                                 snapshot.modelUsable,
+                                                 snapshot.modelInstalled,
                                                  {},
-                                                 engine.latentDimensionCount(),
+                                                 snapshot.latentDimensionCount,
                                                  utf8("Audio pass-through ready — no model loaded")),
                        juce::dontSendNotification);
     }
@@ -213,9 +213,10 @@ private:
         {
             // Qualification failed, so the previous active model was never
             // replaced and remains playable.
+            const auto snapshot = engine.lifecycleStatusSnapshot();
             status.setText(juce::String("Model load failed: ") + juce::String(result.errorMessage)
-                               + (engine.hasUsableModel() ? utf8(" — previous model still active")
-                                                           : juce::String()),
+                               + (snapshot.modelUsable ? utf8(" — previous model still active")
+                                                       : juce::String()),
                            juce::dontSendNotification);
             return;
         }
@@ -244,12 +245,15 @@ private:
             // Derive the current model/usability state from the post-reattach
             // engine lifecycle, and keep the candidate failure cause only as
             // labelled context so it never overrides the live active/dry state.
-            lastLifecycleRevision = engine.lifecycleRevision();
-            const auto current = rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
-                                                           engine.hasUsableModel(),
-                                                           engine.hasModelBackend(),
+            const auto snapshot = engine.lifecycleStatusSnapshot();
+            lastLifecycleRevision = snapshot.revision;
+            if (!snapshot.modelInstalled)
+                rebuildLatentControls(rave::standaloneLatentControlCount(snapshot));
+            const auto current = rave::lifecycleStatusText(snapshot.diagnostic,
+                                                           snapshot.modelUsable,
+                                                           snapshot.modelInstalled,
                                                            {},
-                                                           engine.latentDimensionCount(),
+                                                           snapshot.latentDimensionCount,
                                                            utf8("Audio pass-through ready — no model loaded"));
             const auto candidateCause = rave::candidateFailureCause(activationFailure);
             status.setText(juce::String("Model activation failed: ")
@@ -260,18 +264,19 @@ private:
             return;
         }
 
-        rebuildLatentControls(engine.latentDimensionCount());
+        const auto snapshot = engine.lifecycleStatusSnapshot();
+        rebuildLatentControls(rave::standaloneLatentControlCount(snapshot));
         // Reattaching ran a full prepare; derive the immediate status from the
         // CURRENT engine state via the shared presenter, so a failing checked
         // reset/start or incompatibility at reattachment renders as such —
         // never an unconditional active claim from the pre-reattach result.
         // Sync the observed revision so the next poll does not rewrite it.
-        lastLifecycleRevision = engine.lifecycleRevision();
-        status.setText(rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
-                                                 engine.hasUsableModel(),
-                                                 engine.hasModelBackend(),
+        lastLifecycleRevision = snapshot.revision;
+        status.setText(rave::lifecycleStatusText(snapshot.diagnostic,
+                                                 snapshot.modelUsable,
+                                                 snapshot.modelInstalled,
                                                  {},
-                                                 engine.latentDimensionCount(),
+                                                 snapshot.latentDimensionCount,
                                                  utf8("Audio pass-through ready — no model loaded")),
                        juce::dontSendNotification);
     }

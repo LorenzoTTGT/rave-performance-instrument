@@ -9,14 +9,49 @@
 
 namespace rave
 {
-// Activation failure strings also carry the activation-time rollback outcome
-// after the first semicolon. That suffix is transient: callback reattachment
-// may immediately change usability. Keep only the invariant candidate cause
-// when composing a status with a later lifecycle snapshot.
+// Activation failure strings may carry an engine-appended rollback outcome.
+// Remove only recognized suffixes: backend diagnostics are otherwise opaque
+// and may legitimately begin with or contain semicolons.
 [[nodiscard]] inline std::string candidateFailureCause(const std::string& activationFailure)
 {
-    const auto outcomeSeparator = activationFailure.find(';');
-    return activationFailure.substr(0, outcomeSeparator);
+    static constexpr const char* exactSuffixes[] {
+        "; previous model retained",
+        "; previous model is installed but not usable — remaining in bounded dry pass-through",
+        "; no previous model active",
+        "; no previous model to retain — remaining in bounded dry pass-through"
+    };
+    for (const auto* suffix : exactSuffixes)
+    {
+        const std::string suffixText(suffix);
+        if (activationFailure.size() >= suffixText.size()
+            && activationFailure.compare(activationFailure.size() - suffixText.size(),
+                                         suffixText.size(), suffixText) == 0)
+            return activationFailure.substr(0, activationFailure.size() - suffixText.size());
+    }
+
+    static constexpr const char* rollbackPrefixes[] {
+        "; previous model could not be restarted",
+        "; rollback threw"
+    };
+    static constexpr const char* rollbackEnding = " — remaining in bounded dry pass-through";
+    if (activationFailure.size() >= std::char_traits<char>::length(rollbackEnding)
+        && activationFailure.compare(activationFailure.size() - std::char_traits<char>::length(rollbackEnding),
+                                     std::char_traits<char>::length(rollbackEnding), rollbackEnding) == 0)
+    {
+        for (const auto* prefix : rollbackPrefixes)
+        {
+            const auto position = activationFailure.rfind(prefix);
+            if (position != std::string::npos)
+                return activationFailure.substr(0, position);
+        }
+    }
+    return activationFailure;
+}
+
+[[nodiscard]] inline std::size_t standaloneLatentControlCount(
+    const RaveAudioEngine::LifecycleStatusSnapshot& snapshot) noexcept
+{
+    return snapshot.modelInstalled ? snapshot.latentDimensionCount : 0;
 }
 
 // Shared presenter for engine lifecycle state, used verbatim by the plugin

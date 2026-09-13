@@ -79,21 +79,21 @@ void RavePluginProcessor::prepareToPlay(const double sampleRate, const int sampl
 
 void RavePluginProcessor::refreshLifecycleStatus()
 {
-    const auto revision = engine.lifecycleRevision();
+    const auto snapshot = engine.lifecycleStatusSnapshot();
     const juce::ScopedLock lock(modelStateLock);
-    if (revision == lastSeenLifecycleRevision)
+    if (snapshot.revision == lastSeenLifecycleRevision)
         return;
-    lastSeenLifecycleRevision = revision;
+    lastSeenLifecycleRevision = snapshot.revision;
 
     // Shared presenter: renders the recorded diagnostic verbatim (incompatible
     // reprepare or failing checked reset/start), the active claim when the
     // model is usable, installed-but-not-running after release/dry fallback,
     // or the no-model text — never a stale active claim while silent.
-    currentModelStatus = rave::lifecycleStatusText(engine.lifecycleDiagnostic(),
-                                                   engine.hasUsableModel(),
-                                                   engine.hasModelBackend(),
+    currentModelStatus = rave::lifecycleStatusText(snapshot.diagnostic,
+                                                   snapshot.modelUsable,
+                                                   snapshot.modelInstalled,
                                                    activeModelFile.getFileName(),
-                                                   engine.latentDimensionCount(),
+                                                   snapshot.latentDimensionCount,
                                                    "No model loaded");
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
@@ -335,9 +335,10 @@ bool RavePluginProcessor::finishModelLoadIfReady()
     {
         // Qualification failed, so the previous active model (if any) was never
         // replaced and remains playable.
+        const auto snapshot = engine.lifecycleStatusSnapshot();
         const juce::ScopedLock lock(modelStateLock);
         currentModelStatus = "Model load failed: " + juce::String(result.errorMessage)
-            + (engine.hasUsableModel() ? utf8(" — previous model still active") : juce::String());
+            + (snapshot.modelUsable ? utf8(" — previous model still active") : juce::String());
         currentModelRevision.fetch_add(1, std::memory_order_release);
         return true;
     }
@@ -494,25 +495,25 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
     }
     suspendProcessing(false);
 
-    const auto lifecycleRevision = engine.lifecycleRevision();
+    const auto lifecycleSnapshot = engine.lifecycleStatusSnapshot();
     const juce::ScopedLock lock(modelStateLock);
     // This explicit activation result already incorporates the engine's
     // current lifecycle outcome. Mark that revision observed so an immediate
     // timer refresh cannot erase candidate-failure context with the underlying
     // rollback diagnostic alone.
-    lastSeenLifecycleRevision = lifecycleRevision;
+    lastSeenLifecycleRevision = lifecycleSnapshot.revision;
     if (activated)
     {
         activeModelFile = modelFile;
         currentModelStatus = modelFile.getFileName() + utf8(" active — ")
-            + juce::String(engine.latentDimensionCount()) + " latent dimensions";
+            + juce::String(lifecycleSnapshot.latentDimensionCount) + " latent dimensions";
     }
     else
     {
         // A rollback that abandoned the previous model must also drop the
         // serialized identity: no model means zero latents and no dead path
         // for later state restores.
-        if (!engine.hasModelBackend())
+        if (!lifecycleSnapshot.modelInstalled)
             activeModelFile = juce::File {};
 
         // The engine diagnostic already states the truthful outcome (previous
