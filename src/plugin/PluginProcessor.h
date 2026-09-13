@@ -74,12 +74,17 @@ public:
     // the current revision. Message thread only.
     void refreshLifecycleStatus();
 
+    // Deterministic test seam invoked after a failed-load lifecycle snapshot
+    // and before its status commit. Production leaves this empty.
+    std::function<void()> failedLoadStatusInterleaveForTesting;
+
 private:
     void timerCallback() override;
     void applyMidi(juce::MidiBuffer& midiMessages) noexcept;
     void activateModel(rave::ModelBackendPtr backend,
                        const juce::File& modelFile,
                        const std::vector<float>& restoredLatents);
+    void publishModelLoadFailure(const std::string& errorMessage);
 
     rave::RaveAudioEngine engine;
     juce::AudioParameterFloat* dryWetParameter = nullptr;

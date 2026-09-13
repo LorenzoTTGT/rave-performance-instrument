@@ -171,8 +171,8 @@ void testFailedLoadKeepsPreviousModel(const juce::File& modelFile, const juce::F
             "latent state untouched by failed replacement");
     const auto status = processor->modelStatus();
     require(status.containsIgnoreCase("failed"), "failure status is visible");
-    require(status.containsIgnoreCase("previous model still active"),
-            "failure status explains retention");
+    require(status.containsIgnoreCase("current state") && status.containsIgnoreCase("active"),
+            "failure status composes retention with the current active lifecycle state");
 
     juce::AudioBuffer<float> buffer(2, 8);
     for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
@@ -183,6 +183,36 @@ void testFailedLoadKeepsPreviousModel(const juce::File& modelFile, const juce::F
     requireFiniteOutput(buffer);
 
     processor->releaseResources();
+}
+
+void testFailedLoadCannotOverwriteNewerReleaseStatus(const juce::File& modelFile,
+                                                      const juce::File& junkFile)
+{
+    auto processor = std::make_unique<RavePluginProcessor>();
+    processor->prepareToPlay(48000.0, 8);
+    require(loadModel(*processor, modelFile), "model activates before failed-load interleave");
+
+    bool seamRan = false;
+    processor->failedLoadStatusInterleaveForTesting = [&] {
+        seamRan = true;
+        processor->releaseResources();
+    };
+    require(loadModel(*processor, junkFile), "failed load result is consumed after release interleave");
+    require(seamRan, "failed-load status interleave seam ran");
+
+    const auto status = processor->modelStatus();
+    require(status.containsIgnoreCase("model load failed"),
+            "candidate qualification failure context is preserved");
+    require(status.containsIgnoreCase("installed but not running")
+                && status.containsIgnoreCase("dry pass-through"),
+            "failed-load commit uses the newer release lifecycle state");
+    require(!status.containsIgnoreCase("previous model still active")
+                && !status.containsIgnoreCase("active —"),
+            "failed-load commit emits no stale active wording");
+
+    processor->refreshLifecycleStatus();
+    require(processor->modelStatus() == status,
+            "subsequent timer-equivalent refresh cannot regress the composed status");
 }
 
 void testSampleRateMismatchIsRejectedBeforeActivation(const juce::File& modelFile)
@@ -618,6 +648,7 @@ int main(const int argc, const char* const* argv)
         auto junkFile = juce::File::createTempFile("rave-invalid-model");
         junkFile.replaceWithText("this is not a TorchScript model");
         testFailedLoadKeepsPreviousModel(juce::File(argv[1]), junkFile);
+        testFailedLoadCannotOverwriteNewerReleaseStatus(juce::File(argv[1]), junkFile);
         testSampleRateMismatchIsRejectedBeforeActivation(juce::File(argv[1]));
         testRestoreBeforePrepareIsDeferred(juce::File(argv[1]));
         testReprepareDuringLoadKeepsPreviousModel(juce::File(argv[1]));

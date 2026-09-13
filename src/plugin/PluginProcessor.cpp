@@ -79,9 +79,13 @@ void RavePluginProcessor::prepareToPlay(const double sampleRate, const int sampl
 
 void RavePluginProcessor::refreshLifecycleStatus()
 {
-    const auto snapshot = engine.lifecycleStatusSnapshot();
+    // Lock order for every status commit is modelStateLock, then the engine's
+    // lifecycleMutex through lifecycleStatusSnapshot(). Activation releases
+    // lifecycle ownership before taking modelStateLock, so this order cannot
+    // form a cycle. The realtime process path takes neither lock.
     const juce::ScopedLock lock(modelStateLock);
-    if (snapshot.revision == lastSeenLifecycleRevision)
+    const auto snapshot = engine.lifecycleStatusSnapshot();
+    if (snapshot.revision <= lastSeenLifecycleRevision)
         return;
     lastSeenLifecycleRevision = snapshot.revision;
 
@@ -95,6 +99,36 @@ void RavePluginProcessor::refreshLifecycleStatus()
                                                    activeModelFile.getFileName(),
                                                    snapshot.latentDimensionCount,
                                                    "No model loaded");
+    currentModelRevision.fetch_add(1, std::memory_order_release);
+}
+
+void RavePluginProcessor::publishModelLoadFailure(const std::string& errorMessage)
+{
+    auto snapshot = engine.lifecycleStatusSnapshot();
+    if (failedLoadStatusInterleaveForTesting)
+        failedLoadStatusInterleaveForTesting();
+
+    const juce::ScopedLock lock(modelStateLock);
+    // The initial snapshot intentionally occurs before the test seam. Once the
+    // status lock is held, refresh at most twice if lifecycle revision moved.
+    // This bounded retry prevents the observed interleave from committing an
+    // older active claim while preserving a candidate qualification failure.
+    for (int attempt = 0; attempt < 2
+         && engine.lifecycleRevision() != snapshot.revision; ++attempt)
+        snapshot = engine.lifecycleStatusSnapshot();
+
+    if (snapshot.revision < lastSeenLifecycleRevision)
+        return;
+
+    const auto current = rave::lifecycleStatusText(snapshot.diagnostic,
+                                                   snapshot.modelUsable,
+                                                   snapshot.modelInstalled,
+                                                   activeModelFile.getFileName(),
+                                                   snapshot.latentDimensionCount,
+                                                   "No model loaded");
+    currentModelStatus = "Model load failed: " + juce::String(errorMessage)
+        + utf8(" — current state: ") + current;
+    lastSeenLifecycleRevision = snapshot.revision;
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 
@@ -335,11 +369,7 @@ bool RavePluginProcessor::finishModelLoadIfReady()
     {
         // Qualification failed, so the previous active model (if any) was never
         // replaced and remains playable.
-        const auto snapshot = engine.lifecycleStatusSnapshot();
-        const juce::ScopedLock lock(modelStateLock);
-        currentModelStatus = "Model load failed: " + juce::String(result.errorMessage)
-            + (snapshot.modelUsable ? utf8(" — previous model still active") : juce::String());
-        currentModelRevision.fetch_add(1, std::memory_order_release);
+        publishModelLoadFailure(result.errorMessage);
         return true;
     }
 
@@ -495,8 +525,8 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
     }
     suspendProcessing(false);
 
-    const auto lifecycleSnapshot = engine.lifecycleStatusSnapshot();
     const juce::ScopedLock lock(modelStateLock);
+    const auto lifecycleSnapshot = engine.lifecycleStatusSnapshot();
     // This explicit activation result already incorporates the engine's
     // current lifecycle outcome. Mark that revision observed so an immediate
     // timer refresh cannot erase candidate-failure context with the underlying
