@@ -188,8 +188,8 @@ bool RaveAudioEngine::activateModelBackend(ModelBackendPtr candidate, std::strin
                 ? std::string("previous model could not be restarted")
                 : "previous model could not be restarted: " + restartError;
 
-        // prepareAndStart resets worker latent storage, so restore every
-        // previous latent control value after the re-prepare.
+        // setBackend(previous) rebuilt worker latent storage with defaults, so
+        // restore every previous control value after the verified restart.
         for (std::size_t index = 0; index < previousLatents.size(); ++index)
             static_cast<void>(inferenceWorker.setLatentControl(index, previousLatents[index]));
     }
@@ -366,21 +366,20 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         }
         catch (const std::exception& exception)
         {
-            const auto diagnostic = std::string("backend prepare failed: ") + exception.what()
-                + "; the installed model stays silent — bounded dry pass-through";
-            setLifecycleStateLocked(diagnostic, false);
+            const auto cause = std::string("backend prepare failed: ") + exception.what();
+            setLifecycleStateLocked(
+                cause + "; the installed model stays silent — bounded dry pass-through", false);
             if (startError != nullptr)
-                *startError = diagnostic;
+                *startError = cause;
             return false;
         }
         catch (...)
         {
-            const auto diagnostic = std::string(
-                "backend prepare failed with an unknown exception; the installed model stays silent — "
-                "bounded dry pass-through");
-            setLifecycleStateLocked(diagnostic, false);
+            const auto cause = std::string("backend prepare failed with an unknown exception");
+            setLifecycleStateLocked(
+                cause + "; the installed model stays silent — bounded dry pass-through", false);
             if (startError != nullptr)
-                *startError = diagnostic;
+                *startError = cause;
             return false;
         }
 

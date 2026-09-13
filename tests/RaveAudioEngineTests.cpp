@@ -114,6 +114,19 @@ public:
     }
 };
 
+class UnknownThrowingPrepareBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override { throw 7; }
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 0; }
+    bool process(std::span<const float>, std::span<const float>, std::span<float>) override
+    {
+        return true;
+    }
+};
+
 class IncompatibleRateBackend final : public rave::ModelBackend
 {
 public:
@@ -475,8 +488,26 @@ void testFailedActivationPreservesPreviousBackend()
             "candidate whose prepare fails is rejected");
     require(failureReason.find("previous model retained") != std::string::npos,
             "rollback reports retention");
+    require(failureReason.find("dry pass-through") == std::string::npos,
+            "invariant prepare cause is not contaminated by transient dry state");
+    const auto presentation = rave::contextualLifecycleStatus(
+        "Model activation failed: "
+            + juce::String(rave::candidateFailureCause(failureReason)),
+        engine.lifecycleStatusSnapshot(), "previous.ts", "No model loaded");
+    require(presentation.containsIgnoreCase("backend prepare failed")
+                && presentation.containsIgnoreCase("active"),
+            "throwing candidate cause is composed with the retained active state");
+    require(!presentation.containsIgnoreCase("dry pass-through"),
+            "retained rollback presentation has no stale dry-fallback claim");
     require(engine.hasModelBackend(), "previous model retained after failed activation");
     require(engine.latentDimensionCount() == 0, "previous latent count restored");
+
+    auto unknownBroken = std::make_shared<UnknownThrowingPrepareBackend>();
+    require(!engine.activateModelBackend(unknownBroken, &failureReason),
+            "unknown candidate prepare exception is rejected");
+    require(failureReason.find("unknown exception; previous model retained") != std::string::npos
+                && failureReason.find("dry pass-through") == std::string::npos,
+            "unknown prepare cause remains invariant before rollback outcome");
 
     engine.prepare(48000.0, 4, 2);
     engine.setDryWet(0.5f);
