@@ -432,6 +432,18 @@ void testExactDeadlineAndReleaseInvalidation()
     const float* oneInputs[] { &oneInput };
     float* oneOutputs[] { &oneOutput };
     exact.processAudio(oneInputs, 1, oneOutputs, 1, 1);
+    exact.setDryWet(1.0f);
+    std::vector<float> bridge(2047, 1.0f), bridgeOutput(2047);
+    const float* bridgeInputs[] { bridge.data() };
+    float* bridgeOutputs[] { bridgeOutput.data() };
+    exact.processAudio(bridgeInputs, 1, bridgeOutputs, 1, 2047);
+    std::vector<float> prefade(240, 1.0f), prefadeOutput(240);
+    const float* prefadeInputs[] { prefade.data() };
+    float* prefadeOutputs[] { prefadeOutput.data() };
+    exact.processAudio(prefadeInputs, 1, prefadeOutputs, 1, 240);
+    require(std::abs(prefadeOutput.front() - 2.0f) < 0.00001f
+                && std::abs(prefadeOutput.back() - (1.0f + 1.0f / 240.0f)) < 0.00001f,
+            "wet-to-dry pre-fade starts at the next deadline and reaches dry at playback");
 
     rave::RaveAudioEngine late;
     late.prepare(48000.0, 19, 1);
