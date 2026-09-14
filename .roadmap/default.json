@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 3,
-    "revision": 31,
+    "revision": 34,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -253,8 +253,21 @@
           "branch": "main"
         },
         "generation": 2,
-        "work": "doing",
-        "receipts": {},
+        "work": "implemented",
+        "receipts": {
+          "verified": {
+            "generation": 2,
+            "commit": "6641ac0b928ce4e3334387bfee089513835e4f07",
+            "evidence": "Independent Sol-high correction review PASS on complete d9d9121..6641ac0 patch after documentation findings were fixed. Fresh no-LibTorch configure/build succeeded; CTest passed 8/8; deterministic SVG-to-PNG regeneration, dimensions, RGBA transparency and hashes passed; standalone/VST3/AU bundles contain matching Icon.icns plus canonical SVG and CFBundleIconFile metadata; strict VST3/AU codesign passed. Root inspected 1024px and 16px assets. Evidence: /tmp/rave06-final-evidence/README.txt.",
+            "recordedAt": "2026-09-14T12:18:25.167Z"
+          },
+          "committed": {
+            "generation": 2,
+            "commit": "6641ac0b928ce4e3334387bfee089513835e4f07",
+            "evidence": "Complete reviewed RAVE-06 generation-2 implementation, original assets, deterministic checks, documentation, and portable roadmap revision 31 are committed at 6641ac0b928ce4e3334387bfee089513835e4f07; canonical checkout is clean.",
+            "recordedAt": "2026-09-14T12:18:31.911Z"
+          }
+        },
         "ownership": {
           "owner": "pi-root",
           "branch": "main",
@@ -270,10 +283,11 @@
         }
       }
     ],
-    "updatedAt": "2026-09-14T11:37:12.988Z",
+    "updatedAt": "2026-09-14T12:18:31.911Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "c603b4ed8fce9d47c6a85e2afcc273404bfa861764c63acc5b65b52a866f8b03",
     "1f7cd5cbc89839e414a2920204ec0472f7cafaa83ee1100a9b77d7fb1a8e63fd",
     "4ab5b287f258703a173c2e32bfd5bdbc3a3e49c64615932e531c807f007dd9e4",
     "6669eb09f8e8c84a9756346a4465a23eecbe984726f08a7d827ad1c17909684e",
@@ -283,5 +297,5 @@
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "c603b4ed8fce9d47c6a85e2afcc273404bfa861764c63acc5b65b52a866f8b03"
+  "hash": "b68e1a5ba67b9ef1f5cd9048588b860919be8d8e8b92aa5c92b7ca854ff57668"
 }
