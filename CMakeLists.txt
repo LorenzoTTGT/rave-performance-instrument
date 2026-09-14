@@ -120,6 +120,7 @@ target_sources(rave_instrument PRIVATE src/app/Main.cpp)
 target_link_libraries(rave_instrument
     PRIVATE
         rave_engine
+        juce::juce_audio_utils
         juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags

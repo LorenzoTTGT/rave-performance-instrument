@@ -1,3 +1,4 @@
+#include "state/LatestRequestGeneration.h"
 #include "state/StandaloneSessionState.h"
 
 #include <atomic>
@@ -61,6 +62,15 @@ void testRoundTripAndMidi()
                 && snapshot.audioInputId == "in-1",
             "round trip all identity and latents");
     require(restored.midiController(9) == 21, "mapping round trip");
+}
+
+void testLatestRequestGeneration()
+{
+    rave::LatestRequestGeneration requests;
+    const auto first = requests.begin();
+    const auto second = requests.begin();
+    require(!requests.isCurrent(first) && requests.isCurrent(second),
+            "newest model/preset/relink request wins deterministically");
 }
 
 void testMalformedInput()
@@ -134,6 +144,7 @@ void testConcurrentCountAndRealtimeAccess()
 int main()
 {
     testRoundTripAndMidi();
+    testLatestRequestGeneration();
     testMalformedInput();
     testConcurrentCountAndRealtimeAccess();
     std::cout << "Standalone session state tests passed\n";

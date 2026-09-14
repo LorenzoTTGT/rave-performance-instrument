@@ -29,6 +29,9 @@ RavePluginEditor::RavePluginEditor(RavePluginProcessor& owner)
 #if RAVE_HAS_LIBTORCH
     loadModelButton.setButtonText(utf8("Load TorchScript Model…"));
     loadModelButton.setEnabled(!ownerProcessor.isModelLoading());
+    loadModelButton.setAccessible(true);
+    loadModelButton.setTitle("Load TorchScript Model");
+    loadModelButton.setTooltip("Choose a TorchScript model.");
     loadModelButton.onClick = [this] { chooseModel(); };
 #else
     loadModelButton.setButtonText("LibTorch backend unavailable");
@@ -98,7 +101,11 @@ void RavePluginEditor::chooseModel()
                                  if (!file.existsAsFile())
                                      return;
 
-                                 if (safeThis->ownerProcessor.startModelLoad(file))
+                                 const auto relinking = safeThis->ownerProcessor.isRelinkRequired();
+                                 const auto accepted = relinking
+                                     ? safeThis->ownerProcessor.relinkMissingModel(file)
+                                     : safeThis->ownerProcessor.startModelLoad(file);
+                                 if (accepted)
                                  {
                                      safeThis->loadModelButton.setEnabled(false);
                                      safeThis->status.setText(safeThis->ownerProcessor.modelStatus(),
@@ -204,6 +211,15 @@ void RavePluginEditor::updateMidiLearnLabels()
 
 void RavePluginEditor::timerCallback()
 {
+#if RAVE_HAS_LIBTORCH
+    const auto relinkRequired = ownerProcessor.isRelinkRequired();
+    loadModelButton.setButtonText(relinkRequired ? "Relink Missing Model…"
+                                                : utf8("Load TorchScript Model…"));
+    loadModelButton.setTitle(relinkRequired ? "Relink missing model" : "Load TorchScript Model");
+    loadModelButton.setTooltip(relinkRequired
+        ? "Choose the replacement file for the missing saved model."
+        : "Choose a TorchScript model.");
+#endif
     loadModelButton.setEnabled(!ownerProcessor.isModelLoading());
     status.setText(ownerProcessor.modelStatus(), juce::dontSendNotification);
 

@@ -2,7 +2,7 @@
 
 ## RAVE-04 core state checks
 
-The nonvisual standalone state test exercises a 12-latent bounded preset round trip, MIDI learn/clear/unique reassignment, dry/wet and latent CC ranges, selected MIDI input identity, and audio input/output device identity. Plug-in state schema 2 is capped at 1 MiB and 4096 latents; dimensions 0–7 come only from the stable host macros while dynamic state begins at dimension 8. Missing saved paths remain visible and relinkable. UI and real-host qualification are intentionally not claimed here.
+The standalone state test exercises a 12-latent bounded `.ravepreset` round trip, MIDI learn/clear/unique reassignment, dry/wet and latent CC ranges, selected MIDI input identity, audio input/output device identity, and deterministic latest-request gating. The standalone UI wires these state operations through message-thread snapshots, AudioDeviceSelectorComponent, one selected MIDI callback, visible relinking, and scrolling learn/clear rows. Plug-in state schema 2 is capped at 1 MiB and 4096 latents; dimensions 0–7 come only from the stable host macros while dynamic state begins at dimension 8. Missing saved paths remain visible and relinkable. Real-device and DAW qualification are intentionally not claimed here.
 
 ## Purpose
 

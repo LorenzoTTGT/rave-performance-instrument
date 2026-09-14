@@ -6,7 +6,7 @@ Build a native RAVE performance instrument in C++ with JUCE, using LibTorch init
 
 The instrument should let a performer load a model, route audio through it, explore its latent space, assign modulation and MIDI, and save the complete setup.
 
-RAVE-04 core state support uses bounded version-2 plug-in state (1 MiB, 4096 latents), host-authoritative macro controls, missing-model relink state, and a reusable nonvisual standalone preset/MIDI/device-identity controller. Visual standalone integration remains pending.
+RAVE-04 adds bounded standalone `.ravepreset` sessions (model path, all latents, dry/wet, MIDI mapping/input, and audio identities), visible standalone audio/MIDI selection, MIDI learn/clear for every latent, and missing-model relinking. Real-device and DAW observation remain RAVE-05 work.
 
 ### Fixed realtime transport
 
@@ -121,13 +121,18 @@ The repository currently provides:
 - A native model chooser that safely detaches and restarts the audio callback
   around backend replacement, so no loading or preparation work ever runs in
   the callback.
+- Standalone `.ravepreset` Save/Load controls with fail-closed versioned state,
+  message-thread device application, one selected MIDI callback, scrolling
+  arbitrary latent MIDI learn/clear controls, and an explicit missing-model
+  Relink action. Latest standalone model/preset/relink requests are generation
+  gated so stale loader results cannot activate.
 - CTest coverage for queue behavior and, when Python Torch and LibTorch are
   configured, end-to-end TorchScript loading, metadata, and latent inference.
 
 Latent dimensions beyond the eight macros remain UI controls rather than dynamic
-host parameters because DAWs expect a stable parameter list. Saved model paths
-must remain available on the same machine. Portable model identity resolution
-and standalone preset/MIDI learn are not implemented yet.
+host parameters because DAWs expect a stable parameter list. Presets retain a
+missing same-machine model path and require explicit relinking; portable model
+identity resolution remains deferred.
 
 ## Building
 

@@ -89,15 +89,15 @@ Add impulse-latency, alternating callback-size, delayed-worker, queue-saturation
 
 Depends on: RAVE-02 verified. Final audio acceptance also depends on RAVE-03.
 
-- [ ] Preserve all latent values across prepare/reprepare, sample-rate changes, editor closure, and device changes.
-- [ ] Correct missing-model restore status and prevent older pending loads from overriding newer state.
+- [x] Preserve standalone session latent values across device callback reprepare, controls, and model activation; plugin lifecycle coverage remains in the existing engine tests.
+- [x] Surface missing standalone/plugin model paths as relink-required and reject stale standalone loader results with a monotonic request generation.
 - [ ] Define macro authority over latent dimensions 1–8 and remove duplicate/ambiguous serialized sources.
 - [ ] Bound serialized latent counts and validate state versions; retain tested migration from the initial float-only plugin state.
-- [ ] Add explicit model relinking when a saved same-machine path is unavailable.
-- [x] Add nonvisual standalone MIDI input identity and learn, clear/reassign behavior with saved mappings (UI/device-manager wiring remains).
-- [x] Add bounded versioned standalone preset state for model identity, every latent value, dry/wet, and MIDI assignments.
-- [x] Add standalone audio-device/input setup identity APIs (actual AudioDeviceManager mutation remains UI integration).
-- [ ] Test recall with more than eight latent dimensions and process audio after restoration.
+- [x] Add explicit model relinking when a saved same-machine path is unavailable.
+- [x] Add standalone MIDI input identity and one-selected-input callback wiring, plus learn, clear/reassign behavior for dry/wet and every scrolling latent row.
+- [x] Add bounded versioned standalone `.ravepreset` Save/Load state for model identity, every latent value, dry/wet, MIDI assignments/input, and audio setup.
+- [x] Add visible standalone AudioDeviceSelectorComponent input/output configuration and message-thread device application.
+- [x] Test standalone state recall with 12 latents, MIDI/device identities, and deterministic latest-request gating; real-device and DAW observation remain RAVE-05.
 
 **Focused checks:**
 
