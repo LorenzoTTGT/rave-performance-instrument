@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <thread>
 
 namespace rave
 {
@@ -15,71 +16,123 @@ bool finite(const float value)
 
 StandaloneSessionState::StandaloneSessionState()
 {
-    for (auto& mapping : mappings)
-        mapping.store(-1, std::memory_order_relaxed);
+    for (auto& bank : controlBanks)
+        for (auto& mapping : bank.mappings)
+            mapping.store(-1, std::memory_order_relaxed);
+}
+
+StandaloneSessionState::ControlBank*
+StandaloneSessionState::acquireActiveControlBank() const noexcept
+{
+    constexpr auto closedBit = std::uint32_t { 1 } << 31;
+    for (;;)
+    {
+        const auto index = activeControlBank.load(std::memory_order_acquire);
+        auto& bank = controlBanks[index];
+        auto state = bank.readerState.load(std::memory_order_acquire);
+        if (readerAdmissionInterleaveForTesting)
+            readerAdmissionInterleaveForTesting();
+        if ((state & closedBit) != 0)
+            continue;
+        if (!bank.readerState.compare_exchange_weak(
+                state, state + 1, std::memory_order_acq_rel, std::memory_order_acquire))
+            continue;
+        if (activeControlBank.load(std::memory_order_acquire) == index)
+            return &bank;
+        bank.readerState.fetch_sub(1, std::memory_order_release);
+    }
+}
+
+void StandaloneSessionState::releaseControlBank(ControlBank& bank) noexcept
+{
+    bank.readerState.fetch_sub(1, std::memory_order_release);
 }
 
 void StandaloneSessionState::setLatentCount(std::size_t newCount)
 {
     newCount = std::min(newCount, maximumLatents);
     const juce::ScopedLock lock(controlLock);
-    const auto oldCount = count.load(std::memory_order_relaxed);
+    auto& bank = controlBanks[activeControlBank.load(std::memory_order_acquire)];
+    const auto oldCount = bank.count.load(std::memory_order_relaxed);
 
     if (newCount < oldCount)
     {
-        // Publish a shrink before resetting inactive slots. A reader that observed
-        // the old count can still safely access the fixed-capacity storage.
-        count.store(newCount, std::memory_order_release);
+        bank.count.store(newCount, std::memory_order_release);
         for (auto index = newCount; index < oldCount; ++index)
         {
-            latentValues[index].store(0.0f, std::memory_order_relaxed);
-            mappings[index + 1].store(-1, std::memory_order_relaxed);
+            bank.latentValues[index].store(0.0f, std::memory_order_relaxed);
+            bank.mappings[index + 1].store(-1, std::memory_order_relaxed);
         }
     }
     else if (newCount > oldCount)
     {
-        // Initialize newly active slots before making them visible to readers.
         for (auto index = oldCount; index < newCount; ++index)
         {
-            latentValues[index].store(0.0f, std::memory_order_relaxed);
-            mappings[index + 1].store(-1, std::memory_order_relaxed);
+            bank.latentValues[index].store(0.0f, std::memory_order_relaxed);
+            bank.mappings[index + 1].store(-1, std::memory_order_relaxed);
         }
-        count.store(newCount, std::memory_order_release);
+        bank.count.store(newCount, std::memory_order_release);
     }
 }
 
 std::size_t StandaloneSessionState::latentCount() const noexcept
 {
-    return count.load(std::memory_order_acquire);
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+        return 0;
+    const auto result = bank->count.load(std::memory_order_acquire);
+    releaseControlBank(*bank);
+    return result;
 }
 
 float StandaloneSessionState::latent(const std::size_t index) const noexcept
 {
-    const auto currentCount = latentCount();
-    return index < currentCount
-        ? latentValues[index].load(std::memory_order_relaxed)
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+        return 0.0f;
+    const auto currentCount = bank->count.load(std::memory_order_acquire);
+    const auto result = index < currentCount
+        ? bank->latentValues[index].load(std::memory_order_relaxed)
         : 0.0f;
+    releaseControlBank(*bank);
+    return result;
 }
 
 bool StandaloneSessionState::setLatent(const std::size_t index, const float value) noexcept
 {
-    const auto currentCount = latentCount();
-    if (index >= currentCount || !finite(value))
+    if (!finite(value))
         return false;
-
-    latentValues[index].store(std::clamp(value, -4.0f, 4.0f), std::memory_order_relaxed);
-    return true;
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+        return false;
+    const auto currentCount = bank->count.load(std::memory_order_acquire);
+    const auto valid = index < currentCount;
+    if (valid)
+        bank->latentValues[index].store(
+            std::clamp(value, -4.0f, 4.0f), std::memory_order_relaxed);
+    releaseControlBank(*bank);
+    return valid;
 }
 
 void StandaloneSessionState::setDryWet(const float value) noexcept
 {
-    if (finite(value))
-        mix.store(std::clamp(value, 0.0f, 1.0f), std::memory_order_relaxed);
+    if (!finite(value))
+        return;
+    if (auto* const bank = acquireActiveControlBank())
+    {
+        bank->mix.store(std::clamp(value, 0.0f, 1.0f), std::memory_order_relaxed);
+        releaseControlBank(*bank);
+    }
 }
 
 float StandaloneSessionState::dryWet() const noexcept
 {
-    return mix.load(std::memory_order_relaxed);
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+        return 0.0f;
+    const auto result = bank->mix.load(std::memory_order_relaxed);
+    releaseControlBank(*bank);
+    return result;
 }
 
 void StandaloneSessionState::beginMidiLearn(const int target) noexcept
@@ -91,33 +144,43 @@ void StandaloneSessionState::beginMidiLearn(const int target) noexcept
 
 void StandaloneSessionState::clearMidiMapping(const int target) noexcept
 {
-    if (target == dryWetTarget)
-    {
-        mappings[0].store(-1, std::memory_order_relaxed);
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
         return;
-    }
-
-    if (target >= 0 && static_cast<std::size_t>(target) < latentCount())
-        mappings[static_cast<std::size_t>(target) + 1].store(-1, std::memory_order_relaxed);
+    const auto currentCount = bank->count.load(std::memory_order_acquire);
+    if (target == dryWetTarget)
+        bank->mappings[0].store(-1, std::memory_order_relaxed);
+    else if (target >= 0 && static_cast<std::size_t>(target) < currentCount)
+        bank->mappings[static_cast<std::size_t>(target) + 1].store(
+            -1, std::memory_order_relaxed);
+    releaseControlBank(*bank);
 }
 
 int StandaloneSessionState::midiController(const int target) const noexcept
 {
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+        return -1;
+    const auto currentCount = bank->count.load(std::memory_order_acquire);
+    auto result = -1;
     if (target == dryWetTarget)
-        return mappings[0].load(std::memory_order_relaxed);
-
-    if (target >= 0 && static_cast<std::size_t>(target) < latentCount())
-        return mappings[static_cast<std::size_t>(target) + 1].load(std::memory_order_relaxed);
-
-    return -1;
+        result = bank->mappings[0].load(std::memory_order_relaxed);
+    else if (target >= 0 && static_cast<std::size_t>(target) < currentCount)
+        result = bank->mappings[static_cast<std::size_t>(target) + 1].load(
+            std::memory_order_relaxed);
+    releaseControlBank(*bank);
+    return result;
 }
 
 bool StandaloneSessionState::applyMidiCc(const int controller, const int value) noexcept
 {
     if (controller < 0 || controller > 127 || value < 0 || value > 127)
         return false;
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+        return false;
 
-    const auto currentCount = latentCount();
+    const auto currentCount = bank->count.load(std::memory_order_acquire);
     const auto learnedTarget = learning.exchange(noLearningTarget, std::memory_order_acq_rel);
     const bool validLearnTarget = learnedTarget == dryWetTarget
         || (learnedTarget >= 0
@@ -126,32 +189,32 @@ bool StandaloneSessionState::applyMidiCc(const int controller, const int value) 
     {
         for (std::size_t index = 0; index <= currentCount; ++index)
         {
-            if (mappings[index].load(std::memory_order_relaxed) == controller)
-                mappings[index].store(-1, std::memory_order_relaxed);
+            if (bank->mappings[index].load(std::memory_order_relaxed) == controller)
+                bank->mappings[index].store(-1, std::memory_order_relaxed);
         }
-
         const auto mappingIndex = learnedTarget == dryWetTarget
             ? std::size_t { 0 }
             : static_cast<std::size_t>(learnedTarget) + 1;
-        mappings[mappingIndex].store(controller, std::memory_order_relaxed);
+        bank->mappings[mappingIndex].store(controller, std::memory_order_relaxed);
     }
 
     bool applied = false;
     const auto normalized = static_cast<float>(value) / 127.0f;
-    if (mappings[0].load(std::memory_order_relaxed) == controller)
+    if (bank->mappings[0].load(std::memory_order_relaxed) == controller)
     {
-        setDryWet(normalized);
+        bank->mix.store(normalized, std::memory_order_relaxed);
         applied = true;
     }
-
     for (std::size_t index = 0; index < currentCount; ++index)
     {
-        if (mappings[index + 1].load(std::memory_order_relaxed) == controller)
+        if (bank->mappings[index + 1].load(std::memory_order_relaxed) == controller)
         {
-            latentValues[index].store(-4.0f + 8.0f * normalized, std::memory_order_relaxed);
+            bank->latentValues[index].store(
+                -4.0f + 8.0f * normalized, std::memory_order_relaxed);
             applied = true;
         }
     }
+    releaseControlBank(*bank);
     return applied;
 }
 
@@ -181,17 +244,26 @@ StandaloneSessionState::Snapshot StandaloneSessionState::snapshot() const
 {
     const juce::ScopedLock lock(controlLock);
     auto result = identity;
-    const auto currentCount = latentCount();
-    result.dryWet = dryWet();
+    auto* const bank = acquireActiveControlBank();
+    if (bank == nullptr)
+    {
+        result.dryWet = 0.0f;
+        result.latents.clear();
+        result.midiControllers.assign(1, -1);
+        return result;
+    }
+    const auto currentCount = bank->count.load(std::memory_order_acquire);
+    result.dryWet = bank->mix.load(std::memory_order_relaxed);
     result.latents.resize(currentCount);
     result.midiControllers.resize(currentCount + 1);
-    result.midiControllers[0] = mappings[0].load(std::memory_order_relaxed);
+    result.midiControllers[0] = bank->mappings[0].load(std::memory_order_relaxed);
     for (std::size_t index = 0; index < currentCount; ++index)
     {
-        result.latents[index] = latentValues[index].load(std::memory_order_relaxed);
+        result.latents[index] = bank->latentValues[index].load(std::memory_order_relaxed);
         result.midiControllers[index + 1]
-            = mappings[index + 1].load(std::memory_order_relaxed);
+            = bank->mappings[index + 1].load(std::memory_order_relaxed);
     }
+    releaseControlBank(*bank);
     return result;
 }
 
@@ -214,15 +286,39 @@ bool StandaloneSessionState::restore(const Snapshot& value)
         if (controller < -1 || controller > 127)
             return false;
 
-    setLatentCount(value.latents.size());
-    setDryWet(value.dryWet);
-    for (std::size_t index = 0; index < value.latents.size(); ++index)
-        static_cast<void>(setLatent(index, value.latents[index]));
-
+    // Make all potentially allocating copies before entering the publication
+    // transaction. The inactive bank then receives a complete fixed-capacity
+    // control snapshot before one release-store makes it visible.
+    auto restoredIdentity = value;
     const juce::ScopedLock lock(controlLock);
-    identity = value;
-    for (std::size_t index = 0; index < value.midiControllers.size(); ++index)
-        mappings[index].store(value.midiControllers[index], std::memory_order_relaxed);
+    const auto activeIndex = activeControlBank.load(std::memory_order_acquire);
+    const auto inactiveIndex = std::size_t { 1 } - activeIndex;
+    auto& bank = controlBanks[inactiveIndex];
+    constexpr auto closedBit = std::uint32_t { 1 } << 31;
+    constexpr auto readerMask = closedBit - 1;
+    bank.readerState.fetch_or(closedBit, std::memory_order_acq_rel);
+    while ((bank.readerState.load(std::memory_order_acquire) & readerMask) != 0)
+        std::this_thread::yield();
+
+    bank.count.store(value.latents.size(), std::memory_order_relaxed);
+    bank.mix.store(std::clamp(value.dryWet, 0.0f, 1.0f), std::memory_order_relaxed);
+    for (std::size_t index = 0; index < maximumLatents; ++index)
+    {
+        const auto enabled = index < value.latents.size();
+        bank.latentValues[index].store(
+            enabled ? std::clamp(value.latents[index], -4.0f, 4.0f) : 0.0f,
+            std::memory_order_relaxed);
+        bank.mappings[index + 1].store(
+            enabled ? value.midiControllers[index + 1] : -1,
+            std::memory_order_relaxed);
+    }
+    bank.mappings[0].store(value.midiControllers[0], std::memory_order_relaxed);
+    identity = std::move(restoredIdentity);
+    learning.store(noLearningTarget, std::memory_order_release);
+    if (restoreBeforePublishForTesting)
+        restoreBeforePublishForTesting();
+    bank.readerState.store(0, std::memory_order_release);
+    activeControlBank.store(inactiveIndex, std::memory_order_release);
     return true;
 }
 

@@ -1,7 +1,20 @@
 #include "app/StandalonePresetModelCoordinator.h"
 
+#include "engine/RaveAudioEngine.h"
+
 namespace rave
 {
+void clearStandaloneModelBackend(RaveAudioEngine& engine,
+                                 std::function<void()> detachCallback,
+                                 std::function<void()> reattachCallback)
+{
+    detachCallback();
+    ScopedCallbackReattachment callbackReattachment(std::move(reattachCallback));
+    engine.release();
+    engine.setModelBackend(nullptr);
+    engine.setWetSuppressed(true);
+}
+
 StandalonePresetModelCoordinator::StandalonePresetModelCoordinator(
     StandaloneSessionState& sessionState) noexcept
     : session(sessionState)

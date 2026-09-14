@@ -98,26 +98,34 @@ public:
     // Invoked after validated state parameters commit and before captured MIDI
     // generations are acknowledged.
     std::function<void()> stateRestoreMidiAcknowledgeInterleaveForTesting;
-    // Invoked immediately before activation enters the serialized mutation
-    // transaction, allowing a newer restore to win deterministically.
+    // Invoked after a completed backend has been paired with its exact request
+    // metadata but before activation commits, allowing a newer restore to win
+    // deterministically without mixing request generations.
     std::function<void()> activationMutationInterleaveForTesting;
+    // Invoked while getStateInformation owns the outer mutation lock.
+    std::function<void()> stateSnapshotInterleaveForTesting;
+    void runActivationMutationTransactionForTesting(const std::function<void()>& action);
 
 private:
     void timerCallback() override;
     void applyMidi(juce::MidiBuffer& midiMessages) noexcept;
     void applyRawMidiEvent(const std::uint8_t* data, int byteCount) noexcept;
+    [[nodiscard]] float authoritativeParameterValue(
+        std::size_t target, const juce::AudioParameterFloat* parameter) const noexcept;
     void activateModel(rave::ModelBackendPtr backend,
                        const juce::File& modelFile,
                        const std::vector<float>& restoredLatents,
                        std::uint64_t generation,
                        bool relink);
-    bool queueModelRequest(const juce::File&, std::vector<float>, bool relink);
+    bool queueModelRequest(const juce::File&, std::vector<float>, bool relink,
+                           std::uint64_t generation);
     void publishModelLoadFailure(const std::string& errorMessage, bool relink);
 
     // Outermost lock for message/non-realtime mutations. Recursive because
     // JUCE listener callbacks and test seams may synchronously re-enter.
     mutable std::recursive_mutex nonRealtimeMutationMutex;
     std::uint64_t parameterCommitEpoch = 0;
+    std::size_t parameterCommitDepth = 0;
     rave::RaveAudioEngine engine;
     juce::AudioParameterFloat* dryWetParameter = nullptr;
     std::array<juce::AudioParameterFloat*, macroCount> macroParameters {};
@@ -139,11 +147,9 @@ private:
     juce::File queuedRestoreModelFile;
     std::vector<float> queuedRestoreLatents;
     std::vector<float> pendingLatentRestore;
-#if RAVE_HAS_LIBTORCH
     std::uint64_t pendingGeneration = 0;
     std::uint64_t queuedGeneration = 0;
     bool pendingRelink = false;
-#endif
     bool queuedRelink = false;
     std::atomic<std::uint64_t> requestGeneration { 0 };
     juce::File requestedMissingModelFile;

@@ -168,6 +168,34 @@ void testStateSchemaMigrationsBoundsAndMacroAuthority()
     require(std::abs(processor.dryWetParameterReference().convertFrom0to1(
                 processor.dryWetParameterReference().getValue()) - .75f) < .001f,
             "empty restore preserves host dry/wet");
+
+#if !RAVE_HAS_LIBTORCH
+    auto retainedFile = juce::File::createTempFile("rave-no-torch-retained.ts");
+    require(retainedFile.replaceWithText("identity only"),
+            "create unsupported-backend retained identity");
+    processor.prepareToPlay(48000.0, 8);
+    juce::XmlElement retained("RavePluginState");
+    retained.setAttribute("version", 2);
+    retained.setAttribute("modelPath", retainedFile.getFullPathName());
+    auto* retainedLatents = retained.createNewChildElement("Latents");
+    retainedLatents->setAttribute("count", 1);
+    retainedLatents->setAttribute("firstIndex", 8);
+    retainedLatents->setAttribute("v8", 0.625);
+    block = xmlState(retained);
+    processor.setStateInformation(block.getData(), int(block.getSize()));
+    juce::MemoryBlock retainedSaved;
+    processor.getStateInformation(retainedSaved);
+    parsed = juce::AudioProcessor::getXmlFromBinary(
+        retainedSaved.getData(), int(retainedSaved.getSize()));
+    require(parsed && parsed->getStringAttribute("modelPath") == retainedFile.getFullPathName(),
+            "no-LibTorch build retains desired model identity");
+    dynamic = parsed->getChildByName("Latents");
+    require(dynamic && dynamic->getIntAttribute("count") == 1
+                && std::abs(dynamic->getDoubleAttribute("v8") - 0.625) < 0.001,
+            "no-LibTorch build retains desired dynamic latents");
+    processor.releaseResources();
+    retainedFile.deleteFile();
+#endif
 }
 
 void testFactoryAudioAndState()
@@ -733,6 +761,75 @@ private:
     int resetCalls = 0;
 };
 
+class BlockingRestoreBackend final : public rave::ModelBackend
+{
+public:
+    BlockingRestoreBackend(std::shared_ptr<std::atomic<bool>> enteredValue,
+                           std::shared_ptr<std::atomic<bool>> releaseValue)
+        : entered(std::move(enteredValue)), release(std::move(releaseValue)) {}
+    bool load(const std::string&, std::string&) override
+    {
+        entered->store(true, std::memory_order_release);
+        while (!release->load(std::memory_order_acquire))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        return true;
+    }
+    void prepare(double, std::size_t) override {}
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 12; }
+    bool process(std::span<const float>, std::span<const float>,
+                 std::span<float>) override { return true; }
+private:
+    std::shared_ptr<std::atomic<bool>> entered;
+    std::shared_ptr<std::atomic<bool>> release;
+};
+
+void testInFlightRestoreSnapshotRetainsDesiredState()
+{
+    auto entered = std::make_shared<std::atomic<bool>>(false);
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    auto modelFile = juce::File::createTempFile("rave-pending-restore.ts");
+    require(modelFile.replaceWithText("blocking backend ignores contents"),
+            "create pending restore identity");
+    RavePluginProcessor processor([entered, release] {
+        return std::make_shared<BlockingRestoreBackend>(entered, release);
+    });
+    processor.prepareToPlay(48000.0, 8);
+
+    juce::XmlElement restored("RavePluginState");
+    restored.setAttribute("version", 2);
+    restored.setAttribute("modelPath", modelFile.getFullPathName());
+    auto* latents = restored.createNewChildElement("Latents");
+    latents->setAttribute("count", 4);
+    latents->setAttribute("firstIndex", 8);
+    for (int index = 8; index < 12; ++index)
+        latents->setAttribute("v" + juce::String(index), 0.125 * index);
+    auto state = xmlState(restored);
+    processor.setStateInformation(state.getData(), int(state.getSize()));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!entered->load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    require(entered->load(std::memory_order_acquire), "restore qualification is in flight");
+
+    juce::MemoryBlock snapshot;
+    processor.getStateInformation(snapshot);
+    auto parsed = juce::AudioProcessor::getXmlFromBinary(
+        snapshot.getData(), int(snapshot.getSize()));
+    auto* savedLatents = parsed != nullptr ? parsed->getChildByName("Latents") : nullptr;
+    require(parsed && parsed->getStringAttribute("modelPath") == modelFile.getFullPathName(),
+            "in-flight restore snapshot retains desired model identity");
+    require(savedLatents && savedLatents->getIntAttribute("count") == 4
+                && std::abs(savedLatents->getDoubleAttribute("v8") - 1.0) < 0.001,
+            "in-flight restore snapshot retains desired dynamic latents");
+
+    release->store(true, std::memory_order_release);
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(),
+            "pending restore completes after coherent snapshot");
+    processor.releaseResources();
+    modelFile.deleteFile();
+}
+
 void testDeferredRestoreDisappearanceBecomesRelinkRequired()
 {
     auto reject = std::make_shared<std::atomic<bool>>(false);
@@ -807,9 +904,42 @@ void testDeferredRestoreDisappearanceBecomesRelinkRequired()
     reject->store(false, std::memory_order_release);
     require(activationRace.startModelLoad(newestFile), "activation-race candidate starts");
     require(waitForModelSettled(activationRace), "activation-race candidate qualifies");
+    std::atomic<bool> activationReachedMutation { false };
+    std::atomic<bool> activationTransactionEntered { false };
+    std::thread activationThread;
+    activationRace.activationMutationInterleaveForTesting = [&] {
+        activationReachedMutation.store(true, std::memory_order_release);
+    };
+    bool snapshotSeamEntered = false;
+    activationRace.stateSnapshotInterleaveForTesting = [&] {
+        if (snapshotSeamEntered)
+            return;
+        snapshotSeamEntered = true;
+        activationThread = std::thread([&] {
+            activationRace.runActivationMutationTransactionForTesting([&] {
+                activationTransactionEntered.store(true, std::memory_order_release);
+            });
+        });
+        while (!activationReachedMutation.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        require(!activationTransactionEntered.load(std::memory_order_acquire),
+                "activation transaction cannot enter during coherent state snapshot");
+    };
+    juce::MemoryBlock blockedSnapshot;
+    activationRace.getStateInformation(blockedSnapshot);
+    activationRace.stateSnapshotInterleaveForTesting = {};
+    activationThread.join();
+    require(activationTransactionEntered.load(std::memory_order_acquire),
+            "activation transaction proceeds after coherent snapshot releases");
+    activationRace.activationMutationInterleaveForTesting = {};
+    require(activationRace.finishModelLoadIfReady()
+                && activationRace.latentDimensionCount() == 12,
+            "qualified candidate activates after blocked snapshot test");
+
+    require(activationRace.startModelLoad(newestFile), "stale activation candidate restarts");
+    require(waitForModelSettled(activationRace), "stale activation candidate qualifies");
     bool newerRestoreCommitted = false;
     activationRace.activationMutationInterleaveForTesting = [&] {
-        activationRace.activationMutationInterleaveForTesting = {};
         juce::XmlElement empty("RavePluginState");
         empty.setAttribute("version", 2);
         auto emptyState = xmlState(empty);
@@ -817,9 +947,21 @@ void testDeferredRestoreDisappearanceBecomesRelinkRequired()
         newerRestoreCommitted = true;
     };
     require(activationRace.finishModelLoadIfReady(), "stale activation result consumed");
+    activationRace.activationMutationInterleaveForTesting = {};
     require(newerRestoreCommitted && activationRace.latentDimensionCount() == 0
                 && !activationRace.modelStatus().containsIgnoreCase("active"),
             "newer empty restore wins before activation mutation transaction");
+    juce::AudioBuffer<float> emptyRestoreAudio(2, 2048);
+    juce::MidiBuffer emptyRestoreMidi;
+    for (int blockIndex = 0; blockIndex < 3; ++blockIndex)
+    {
+        for (int channel = 0; channel < emptyRestoreAudio.getNumChannels(); ++channel)
+            for (int sample = 0; sample < emptyRestoreAudio.getNumSamples(); ++sample)
+                emptyRestoreAudio.setSample(channel, sample, 1.0f);
+        activationRace.processBlock(emptyRestoreAudio, emptyRestoreMidi);
+    }
+    require(std::abs(emptyRestoreAudio.getSample(0, 2047) - 1.0f) < 0.00001f,
+            "active-to-empty restore preserves prepared aligned dry transport");
     activationRace.releaseResources();
 
     modelFile.deleteFile();
@@ -1035,6 +1177,15 @@ void testStateRestoreReconcilesMidiMailboxes()
     macroMidi.addEvent(juce::MidiMessage::controllerEvent(1, 71, 127), 0);
     processor.processBlock(audio, macroMidi);
 
+    juce::MemoryBlock unpublishedMidiState;
+    processor.getStateInformation(unpublishedMidiState);
+    auto unpublished = juce::AudioProcessor::getXmlFromBinary(
+        unpublishedMidiState.getData(), int(unpublishedMidiState.getSize()));
+    require(unpublished
+                && std::abs(unpublished->getDoubleAttribute("dryWet") - 1.0) < 0.001
+                && std::abs(unpublished->getDoubleAttribute("macro1") - 4.0) < 0.001,
+            "state snapshot captures newest unpublished MIDI-controlled values");
+
     juce::XmlElement restored("RavePluginState");
     restored.setAttribute("version", 2);
     restored.setAttribute("dryWet", 0.25);
@@ -1054,13 +1205,45 @@ void testStateRestoreReconcilesMidiMailboxes()
     stalePublish.addEvent(juce::MidiMessage::controllerEvent(1, 71, 127), 0);
     processor.processBlock(audio, stalePublish);
     processor.midiPublishInterleaveForTesting = [&] {
-        processor.midiPublishInterleaveForTesting = {};
         processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
     };
     processor.publishPendingMidiParameterChanges();
+    processor.midiPublishInterleaveForTesting = {};
     require(std::abs(processor.macroParameterReference(0).convertFrom0to1(
                          processor.macroParameterReference(0).getValue()) + 2.0f) < 0.001f,
             "restore epoch aborts publisher that captured stale MIDI");
+
+    juce::XmlElement nested("RavePluginState");
+    nested.setAttribute("version", 2);
+    nested.setAttribute("macro1", 1.0);
+    nested.setAttribute("midiCc1", 71);
+    nested.setAttribute("modelPath", "/definitely/missing/nested-rave-model.ts");
+    const auto nestedState = xmlState(nested);
+    juce::XmlElement outerNested("RavePluginState");
+    outerNested.setAttribute("version", 2);
+    outerNested.setAttribute("macro1", -3.0);
+    outerNested.setAttribute("midiCc1", 72);
+    outerNested.setAttribute("modelPath", "/definitely/missing/outer-rave-model.ts");
+    const auto outerNestedState = xmlState(outerNested);
+    bool nestedPublisherReturned = false;
+    bool nestedRestoreEntered = false;
+    processor.stateRestoreMidiAcknowledgeInterleaveForTesting = [&] {
+        if (nestedRestoreEntered)
+            return;
+        nestedRestoreEntered = true;
+        processor.setStateInformation(nestedState.getData(), int(nestedState.getSize()));
+        processor.publishPendingMidiParameterChanges();
+        nestedPublisherReturned = true;
+    };
+    processor.setStateInformation(
+        outerNestedState.getData(), static_cast<int>(outerNestedState.getSize()));
+    processor.stateRestoreMidiAcknowledgeInterleaveForTesting = {};
+    require(nestedPublisherReturned
+                && std::abs(processor.macroParameterReference(0).convertFrom0to1(
+                                processor.macroParameterReference(0).getValue()) - 1.0f) < 0.001f
+                && processor.requestedModelPath().contains("nested-rave-model.ts")
+                && !processor.requestedModelPath().contains("outer-rave-model.ts"),
+            "nested restore keeps newer parameters and model identity authoritative");
 
     juce::MidiBuffer oldPending;
     oldPending.addEvent(juce::MidiMessage::controllerEvent(1, 71, 10), 0);
@@ -1204,6 +1387,7 @@ int main(const int argc, const char* const* argv)
         testPrepareThrowAtReprepareReportsStatus(juce::File(argv[1]));
         testRollbackFailureClearsLatentsAndSerializedModelPath(juce::File(argv[1]));
 #if RAVE_HAS_LIBTORCH
+        testInFlightRestoreSnapshotRetainsDesiredState();
         testDeferredRestoreDisappearanceBecomesRelinkRequired();
         testMissingRelinkSuppressionAndTwelveLatents(juce::File(argv[1]));
 #endif

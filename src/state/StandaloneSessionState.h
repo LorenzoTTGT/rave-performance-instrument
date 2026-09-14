@@ -7,6 +7,8 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace rave
@@ -51,6 +53,10 @@ public:
     [[nodiscard]] bool restore(const Snapshot& value);
     [[nodiscard]] bool serialize(juce::MemoryBlock& output) const;
     [[nodiscard]] bool deserialize(const void* data, std::size_t bytes);
+    // Test-only seams for deterministic bank-publication schedules.
+    // Production never sets them.
+    std::function<void()> restoreBeforePublishForTesting;
+    mutable std::function<void()> readerAdmissionInterleaveForTesting;
     // Reads at most maximumSerializedBytes + 1, so size validation never
     // follows an unbounded whole-file allocation.
     [[nodiscard]] static bool readBoundedPresetFile(const juce::File& file,
@@ -60,14 +66,25 @@ private:
     static constexpr std::size_t maximumStringLength = 4096;
     static constexpr int noLearningTarget = -2;
 
+    struct ControlBank
+    {
+        std::array<std::atomic<float>, maximumLatents> latentValues {};
+        std::array<std::atomic<int>, maximumLatents + 1> mappings {};
+        std::atomic<std::size_t> count { 0 };
+        std::atomic<float> mix { 0.0f };
+        // High bit closes admission; low bits count admitted lock-free readers.
+        std::atomic<std::uint32_t> readerState { 0 };
+    };
+
+    [[nodiscard]] ControlBank* acquireActiveControlBank() const noexcept;
+    static void releaseControlBank(ControlBank& bank) noexcept;
+
     mutable juce::CriticalSection controlLock;
     Snapshot identity;
-    // Fixed-capacity storage is allocated with this object and never replaced,
-    // so realtime readers remain lifetime-safe while the message thread changes count.
-    std::array<std::atomic<float>, maximumLatents> latentValues {};
-    std::array<std::atomic<int>, maximumLatents + 1> mappings {};
-    std::atomic<std::size_t> count { 0 };
-    std::atomic<float> mix { 0.0f };
+    // Restore fills the inactive fixed-capacity bank and atomically publishes
+    // it. Realtime readers never observe a partly restored mapping/value set.
+    mutable std::array<ControlBank, 2> controlBanks {};
+    std::atomic<std::size_t> activeControlBank { 0 };
     std::atomic<int> learning { noLearningTarget };
 };
 }

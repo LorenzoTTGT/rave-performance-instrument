@@ -136,6 +136,51 @@ void testBoundedPresetFileRead()
     oversized.deleteFile();
 }
 
+void testRestorePublishesControlsAtomicallyAgainstMidi()
+{
+    rave::StandaloneSessionState state;
+    state.setLatentCount(1);
+    state.beginMidiLearn(0);
+    require(state.applyMidiCc(74, 0), "establish pre-restore MIDI mapping");
+
+    auto restored = state.snapshot();
+    restored.latents[0] = 1.5f;
+    restored.midiControllers[1] = 75;
+    bool seamEntered = false;
+    state.restoreBeforePublishForTesting = [&] {
+        seamEntered = true;
+        require(state.applyMidiCc(74, 127),
+                "MIDI at restore boundary applies only to previous control bank");
+    };
+    require(state.restore(restored), "restore complete banked control snapshot");
+    state.restoreBeforePublishForTesting = {};
+    require(seamEntered && state.midiController(0) == 75
+                && std::abs(state.latent(0) - 1.5f) < 0.001f,
+            "restore publication supersedes MIDI admitted before bank swap");
+    require(state.applyMidiCc(75, 127) && std::abs(state.latent(0) - 4.0f) < 0.001f,
+            "MIDI after bank swap is authoritative under restored mapping");
+
+    auto firstRapidRestore = state.snapshot();
+    firstRapidRestore.latents[0] = -1.0f;
+    firstRapidRestore.midiControllers[1] = 76;
+    auto secondRapidRestore = firstRapidRestore;
+    secondRapidRestore.latents[0] = 2.0f;
+    bool rapidRestoresRan = false;
+    state.readerAdmissionInterleaveForTesting = [&] {
+        if (rapidRestoresRan)
+            return;
+        rapidRestoresRan = true;
+        require(state.restore(firstRapidRestore) && state.restore(secondRapidRestore),
+                "two rapid restores complete during paused reader admission");
+    };
+    require(state.applyMidiCc(76, 127),
+            "CAS admission retries safely across two-bank ABA publication");
+    state.readerAdmissionInterleaveForTesting = {};
+    require(rapidRestoresRan && state.midiController(0) == 76
+                && std::abs(state.latent(0) - 4.0f) < 0.001f,
+            "MIDI after rapid restores applies only to the final complete bank");
+}
+
 void testConcurrentCountAndRealtimeAccess()
 {
     rave::StandaloneSessionState state;
@@ -189,6 +234,7 @@ int main()
     testLatestRequestGeneration();
     testMalformedInput();
     testBoundedPresetFileRead();
+    testRestorePublishesControlsAtomicallyAgainstMidi();
     testConcurrentCountAndRealtimeAccess();
     std::cout << "Standalone session state tests passed\n";
 }

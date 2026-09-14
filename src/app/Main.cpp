@@ -494,6 +494,11 @@ private:
                 }
         }
         syncControlsAndEngine();
+        if (preset.modelPath.isEmpty())
+            rave::clearStandaloneModelBackend(
+                engine,
+                [this] { deviceManager.removeAudioCallback(&engine); },
+                [this] { deviceManager.addAudioCallback(&engine); });
 #if RAVE_HAS_LIBTORCH
         if (preset.modelPath.isNotEmpty() && juce::File(preset.modelPath).existsAsFile())
             requestModel(juce::File(preset.modelPath), false, true, generation);
@@ -648,6 +653,8 @@ private:
             return;
         }
         deviceManager.removeAudioCallback(&engine);
+        rave::ScopedCallbackReattachment callbackReattachment(
+            [this] { deviceManager.addAudioCallback(&engine); });
         std::string failure;
         bool activated = false;
         try
@@ -662,7 +669,6 @@ private:
         {
             failure = "unknown activation error";
         }
-        deviceManager.addAudioCallback(&engine);
         if (!requestGate.isCurrent(request->generation))
         {
             startQueuedRequestIfAny();
@@ -676,6 +682,7 @@ private:
                 relinkRequired = presetModelCoordinator.relinkRequired();
                 relinkButton.setEnabled(relinkRequired);
             }
+            callbackReattachment.reattach();
             const auto lifecycleSnapshot = engine.lifecycleStatusSnapshot();
             const auto cause = rave::candidateFailureCause(
                 failure.empty() ? "candidate was not accepted" : failure);
@@ -701,11 +708,18 @@ private:
         session.setModelPath(request->file.getFullPathName());
         rebuildLatentControls(engine.latentDimensionCount());
         syncControlsAndEngine();
-        if (request->replacement)
-            engine.setWetSuppressed(false);
-        static_cast<void>(presetModelCoordinator.completeActivation(request->generation));
+        if (!presetModelCoordinator.completeActivation(request->generation))
+        {
+            startQueuedRequestIfAny();
+            return;
+        }
         relinkRequired = false;
         relinkButton.setEnabled(false);
+        // Controls and coordinator authority are committed while detached. Keep
+        // replacement wet suppressed through reattachment, then permit frames.
+        callbackReattachment.reattach();
+        if (request->replacement)
+            engine.setWetSuppressed(false);
         refreshLifecycleStatus();
         startQueuedRequestIfAny();
     }

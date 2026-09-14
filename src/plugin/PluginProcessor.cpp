@@ -22,6 +22,25 @@ namespace
 {
     return juce::String(juce::CharPointer_UTF8(text));
 }
+
+class ParameterCommitScope final
+{
+public:
+    ParameterCommitScope(std::size_t& depthValue, std::uint64_t& epochValue) noexcept
+        : depth(depthValue), epoch(epochValue)
+    {
+        ++depth;
+        ++epoch;
+    }
+    ~ParameterCommitScope()
+    {
+        --depth;
+        ++epoch;
+    }
+private:
+    std::size_t& depth;
+    std::uint64_t& epoch;
+};
 } // namespace
 
 RavePluginProcessor::RavePluginProcessor(std::function<rave::ModelBackendPtr()> backendFactory)
@@ -141,22 +160,24 @@ bool RavePluginProcessor::isBusesLayoutSupported(const BusesLayout& layouts) con
         && (output == juce::AudioChannelSet::mono() || output == juce::AudioChannelSet::stereo());
 }
 
+float RavePluginProcessor::authoritativeParameterValue(
+    const std::size_t target, const juce::AudioParameterFloat* const parameter) const noexcept
+{
+    if (parameter == nullptr || target >= midiTargetCount)
+        return 0.0f;
+    const auto latestSequence = midiValueSequences[target].load(std::memory_order_acquire);
+    const auto publishedSequence = midiPublishedSequences[target].load(std::memory_order_acquire);
+    return latestSequence != publishedSequence
+        ? parameter->convertFrom0to1(midiLatestValues[target].load(std::memory_order_relaxed))
+        : parameter->get();
+}
+
 void RavePluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                        juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
     applyMidi(midiMessages);
-    const auto realtimeParameterValue = [this](const std::size_t target,
-                                                juce::AudioParameterFloat* const parameter) {
-        const auto latestSequence = midiValueSequences[target].load(std::memory_order_acquire);
-        const auto publishedSequence = midiPublishedSequences[target].load(std::memory_order_acquire);
-        return latestSequence != publishedSequence
-            ? parameter->convertFrom0to1(midiLatestValues[target].load(std::memory_order_relaxed))
-            : parameter->get();
-    };
-    engine.setDryWet(dryWetParameter != nullptr
-                         ? realtimeParameterValue(0, dryWetParameter)
-                         : 0.0f);
+    engine.setDryWet(authoritativeParameterValue(0, dryWetParameter));
 
     constexpr std::size_t maximumSupportedChannels = 2;
     const auto channelCount = static_cast<std::size_t>(buffer.getNumChannels());
@@ -177,7 +198,7 @@ void RavePluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     const auto controlledLatents = std::min(macroCount, engine.latentDimensionCount());
     for (std::size_t index = 0; index < controlledLatents; ++index)
         static_cast<void>(engine.setLatentControl(
-            index, realtimeParameterValue(index + 1, macroParameters[index])));
+            index, authoritativeParameterValue(index + 1, macroParameters[index])));
 
     engine.processAudio(inputs.data(),
                         static_cast<int>(channelCount),
@@ -191,14 +212,27 @@ juce::AudioProcessorEditor* RavePluginProcessor::createEditor()
     return new RavePluginEditor(*this);
 }
 
+void RavePluginProcessor::runActivationMutationTransactionForTesting(
+    const std::function<void()>& action)
+{
+    if (activationMutationInterleaveForTesting)
+        activationMutationInterleaveForTesting();
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
+    action();
+}
+
 void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData)
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
+    if (stateSnapshotInterleaveForTesting)
+        stateSnapshotInterleaveForTesting();
     juce::XmlElement state("RavePluginState");
     state.setAttribute("version", stateSchemaVersion);
-    state.setAttribute("dryWet", dryWetParameter != nullptr ? dryWetParameter->get() : 0.0f);
+    state.setAttribute("dryWet", authoritativeParameterValue(0, dryWetParameter));
     for (std::size_t index = 0; index < macroCount; ++index)
     {
-        state.setAttribute("macro" + juce::String(index + 1), macroParameters[index]->get());
+        state.setAttribute("macro" + juce::String(index + 1),
+                           authoritativeParameterValue(index + 1, macroParameters[index]));
         state.setAttribute("midiCc" + juce::String(index + 1),
                            midiControllers[index + 1].load(std::memory_order_relaxed));
     }
@@ -208,6 +242,7 @@ void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData
     juce::File savedModel;
     std::vector<float> savedRelinkLatents;
     {
+        const auto currentGeneration = requestGeneration.load(std::memory_order_acquire);
         const juce::ScopedLock lock(modelStateLock);
         savedRelinkRequired = relinkRequired;
         if (savedRelinkRequired)
@@ -215,7 +250,16 @@ void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData
             savedModel = requestedMissingModelFile;
             savedRelinkLatents = retainedMissingLatents;
         }
-        else if (hasQueuedModelRestore.load(std::memory_order_acquire))
+        else if (pendingGeneration == currentGeneration
+                 && (pendingRelink || !pendingLatentRestore.empty()))
+        {
+            // A state restore remains authoritative while its model is being
+            // qualified; do not fall back to the old active identity/latents.
+            savedModel = pendingModelFile;
+            savedRelinkLatents = pendingLatentRestore;
+        }
+        else if (hasQueuedModelRestore.load(std::memory_order_acquire)
+                 && queuedGeneration == currentGeneration)
         {
             savedModel = queuedRestoreModelFile;
             savedRelinkLatents = queuedRestoreLatents;
@@ -261,12 +305,11 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         {
             const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
             const auto captured = midiValueSequences[0].load(std::memory_order_acquire);
-            ++parameterCommitEpoch;
+            ParameterCommitScope commitScope(parameterCommitDepth, parameterCommitEpoch);
             dryWetParameter->setValueNotifyingHost(
                 dryWetParameter->convertTo0to1(juce::jlimit(0.0f, 1.0f, value)));
             if (midiValueSequences[0].load(std::memory_order_acquire) == captured)
                 midiPublishedSequences[0].store(captured, std::memory_order_release);
-            ++parameterCommitEpoch;
         }
         return;
     }
@@ -324,6 +367,8 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     // commit, mailbox reconciliation, and model generation then linearize as
     // one non-realtime operation.
     const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
+    const auto restoreGeneration =
+        requestGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
     const auto restoredRelinkRequested = version >= 2
         && state->getBoolAttribute("relinkRequired", false);
     bool replacementRestore = restoredRelinkRequested;
@@ -339,30 +384,38 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         capturedMidiSequences[target]
             = midiValueSequences[target].load(std::memory_order_acquire);
 
-    ++parameterCommitEpoch;
-    const auto restoreParameter = [](juce::AudioParameterFloat& parameter, const float value) {
-        parameter.setValueNotifyingHost(parameter.convertTo0to1(value));
-    };
-    restoreParameter(*dryWetParameter, restoredDryWet);
-    midiControllers[0].store(restoredMidi[0], std::memory_order_relaxed);
-    for (std::size_t index = 0; index < macroCount; ++index)
     {
-        restoreParameter(*macroParameters[index], restoredMacros[index]);
-        midiControllers[index + 1].store(restoredMidi[index + 1], std::memory_order_relaxed);
+        ParameterCommitScope commitScope(parameterCommitDepth, parameterCommitEpoch);
+        const auto restoreParameter = [](juce::AudioParameterFloat& parameter, const float value) {
+            parameter.setValueNotifyingHost(parameter.convertTo0to1(value));
+        };
+        restoreParameter(*dryWetParameter, restoredDryWet);
+        if (requestGeneration.load(std::memory_order_acquire) != restoreGeneration)
+            return;
+        midiControllers[0].store(restoredMidi[0], std::memory_order_relaxed);
+        for (std::size_t index = 0; index < macroCount; ++index)
+        {
+            restoreParameter(*macroParameters[index], restoredMacros[index]);
+            if (requestGeneration.load(std::memory_order_acquire) != restoreGeneration)
+                return;
+            midiControllers[index + 1].store(restoredMidi[index + 1], std::memory_order_relaxed);
+        }
+
+        if (stateRestoreMidiAcknowledgeInterleaveForTesting)
+            stateRestoreMidiAcknowledgeInterleaveForTesting();
+        if (requestGeneration.load(std::memory_order_acquire) != restoreGeneration)
+            return;
+        for (std::size_t target = 0; target < midiTargetCount; ++target)
+        {
+            const auto captured = capturedMidiSequences[target];
+            if (midiValueSequences[target].load(std::memory_order_acquire) == captured)
+                midiPublishedSequences[target].store(captured, std::memory_order_release);
+        }
     }
 
-    if (stateRestoreMidiAcknowledgeInterleaveForTesting)
-        stateRestoreMidiAcknowledgeInterleaveForTesting();
-    for (std::size_t target = 0; target < midiTargetCount; ++target)
-    {
-        const auto captured = capturedMidiSequences[target];
-        if (midiValueSequences[target].load(std::memory_order_acquire) == captured)
-            midiPublishedSequences[target].store(captured, std::memory_order_release);
-    }
-    ++parameterCommitEpoch;
-
+    if (requestGeneration.load(std::memory_order_acquire) != restoreGeneration)
+        return;
     const juce::File restoredModel(restoredModelPath);
-    requestGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (restoredModel.existsAsFile())
     {
         {
@@ -376,7 +429,8 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         if (replacementRestore)
             engine.setWetSuppressed(true);
         static_cast<void>(queueModelRequest(
-            restoredModel, std::move(restoredLatents), replacementRestore));
+            restoredModel, std::move(restoredLatents), replacementRestore,
+            restoreGeneration));
     }
     else
     {
@@ -397,7 +451,30 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
             currentStatusNeedsLifecycle = false;
             currentModelRevision.fetch_add(1, std::memory_order_release);
         }
-        engine.setWetSuppressed(true);
+        if (isMissing)
+        {
+            engine.setWetSuppressed(true);
+        }
+        else
+        {
+            // An explicit empty restore means no model, not merely a hidden
+            // previous backend. Stop worker access while the host callback is
+            // excluded, then clear the backend and its latent storage.
+            const auto retainedConfiguration = engine.runtimeConfiguration();
+            suspendProcessing(true);
+            {
+                const juce::ScopedLock callbackGuard(getCallbackLock());
+                engine.release();
+                engine.setModelBackend(nullptr);
+                if (retainedConfiguration.sampleRate > 0.0
+                    && retainedConfiguration.maximumBlockSize > 0)
+                    engine.prepare(retainedConfiguration.sampleRate,
+                                   retainedConfiguration.maximumBlockSize,
+                                   getTotalNumOutputChannels());
+            }
+            suspendProcessing(false);
+            engine.setWetSuppressed(true);
+        }
     }
 
     if (const auto* const messageManager = juce::MessageManager::getInstanceWithoutCreating();
@@ -439,8 +516,8 @@ bool RavePluginProcessor::isLearningMidiTarget(const std::size_t targetIndex) co
 bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
 {
     const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
-    requestGeneration.fetch_add(1, std::memory_order_acq_rel);
-    return queueModelRequest(modelFile, {}, false);
+    const auto generation = requestGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    return queueModelRequest(modelFile, {}, false, generation);
 }
 
 bool RavePluginProcessor::relinkMissingModel(const juce::File& modelFile)
@@ -448,8 +525,8 @@ bool RavePluginProcessor::relinkMissingModel(const juce::File& modelFile)
     const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     std::vector<float> values;
     { const juce::ScopedLock lock(modelStateLock); if (!relinkRequired) return false; values = retainedMissingLatents; }
-    requestGeneration.fetch_add(1, std::memory_order_acq_rel);
-    return queueModelRequest(modelFile, std::move(values), true);
+    const auto generation = requestGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    return queueModelRequest(modelFile, std::move(values), true, generation);
 }
 
 bool RavePluginProcessor::isRelinkRequired() const noexcept
@@ -459,11 +536,13 @@ juce::String RavePluginProcessor::requestedModelPath() const
 
 bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile,
                                             std::vector<float> values,
-                                            const bool relink)
+                                            const bool relink,
+                                            const std::uint64_t generation)
 {
     const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
+    if (generation != requestGeneration.load(std::memory_order_acquire))
+        return false;
 #if RAVE_HAS_LIBTORCH
-    const auto generation = requestGeneration.load(std::memory_order_acquire);
     // Retain the newest request until a real host/device configuration exists.
     const auto configuration = engine.runtimeConfiguration();
     if (configuration.sampleRate <= 0.0 || configuration.maximumBlockSize == 0)
@@ -501,9 +580,15 @@ bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile,
     currentStatusNeedsLifecycle = false;
     return true;
 #else
-    static_cast<void>(modelFile); static_cast<void>(values); static_cast<void>(relink);
     const juce::ScopedLock lock(modelStateLock);
-    currentModelStatus = "LibTorch backend unavailable";
+    // Preserve a restored/requested identity even when this build cannot load
+    // it. A later LibTorch-capable instance can still recover the same state.
+    queuedRestoreModelFile = modelFile;
+    queuedRestoreLatents = std::move(values);
+    queuedGeneration = generation;
+    queuedRelink = relink;
+    hasQueuedModelRestore.store(true, std::memory_order_release);
+    currentModelStatus = "LibTorch backend unavailable; saved model retained";
     currentStatusNeedsLifecycle = false;
     return false;
 #endif
@@ -515,21 +600,20 @@ bool RavePluginProcessor::finishModelLoadIfReady()
     if (modelLoader == nullptr)
         return false;
 
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     const auto state = modelLoader->state();
     if (state != rave::BackgroundModelLoader::State::succeeded
         && state != rave::BackgroundModelLoader::State::failed)
         return false;
 
     auto result = modelLoader->takeResult();
-    if (result.state == rave::BackgroundModelLoader::State::succeeded
-        && activationMutationInterleaveForTesting)
-        activationMutationInterleaveForTesting();
-    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     juce::File loadedFile;
     std::vector<float> restoredLatents;
     std::uint64_t generation = 0;
     bool relink = false;
     {
+        // Pair the consumed backend result with its request metadata before
+        // any reentrant seam or newer restore can install another request.
         const juce::ScopedLock lock(modelStateLock);
         loadedFile = pendingModelFile;
         restoredLatents = std::move(pendingLatentRestore);
@@ -538,6 +622,9 @@ bool RavePluginProcessor::finishModelLoadIfReady()
         relink = pendingRelink;
         pendingRelink = false;
     }
+    if (result.state == rave::BackgroundModelLoader::State::succeeded
+        && activationMutationInterleaveForTesting)
+        activationMutationInterleaveForTesting();
     if (generation != requestGeneration.load(std::memory_order_acquire))
         return true;
 
@@ -748,7 +835,7 @@ void RavePluginProcessor::publishPendingMidiParameterChanges()
             continue;
         const auto value = midiLatestValues[target].load(std::memory_order_relaxed);
         const auto capturedEpoch = parameterCommitEpoch;
-        if ((capturedEpoch & 1u) != 0)
+        if (parameterCommitDepth != 0)
             continue;
         if (midiPublishInterleaveForTesting)
             midiPublishInterleaveForTesting();

@@ -1,9 +1,14 @@
 #include "app/StandalonePresetModelCoordinator.h"
 #include "engine/LifecycleStatusText.h"
+#include "engine/RaveAudioEngine.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
+#include <span>
+#include <stdexcept>
+#include <string>
 
 namespace
 {
@@ -15,6 +20,17 @@ void require(const bool condition, const char* const message)
         std::exit(EXIT_FAILURE);
     }
 }
+
+class ThreeLatentBackend final : public rave::ModelBackend
+{
+public:
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 3; }
+    bool process(std::span<const float>, std::span<const float>,
+                 std::span<float>) override { return true; }
+};
 
 rave::StandaloneSessionState::Snapshot twelveLatentPreset(const juce::String& modelPath)
 {
@@ -259,6 +275,53 @@ void testActivationFailureStatusRevisionInterleaving()
     require(!gate.shouldPublish(11), "stale lifecycle event cannot overwrite newer status");
 }
 
+void testCallbackReattachmentGuard()
+{
+    int reattachments = 0;
+    {
+        rave::ScopedCallbackReattachment guard([&] { ++reattachments; });
+    }
+    require(reattachments == 1, "early exit reattaches callback exactly once");
+    {
+        rave::ScopedCallbackReattachment guard([&] { ++reattachments; });
+        guard.reattach();
+        guard.reattach();
+    }
+    require(reattachments == 2,
+            "successful explicit reattachment and destructor remain exactly once");
+    try
+    {
+        rave::ScopedCallbackReattachment guard([&] { ++reattachments; });
+        throw std::runtime_error("activation commit seam");
+    }
+    catch (const std::runtime_error&)
+    {
+    }
+    require(reattachments == 3, "exception exit reattaches callback exactly once");
+}
+
+void testEmptyPresetClearsInstalledBackendWhileDetached()
+{
+    rave::RaveAudioEngine engine;
+    engine.setModelBackend(std::make_shared<ThreeLatentBackend>());
+    require(engine.hasModelBackend() && engine.latentDimensionCount() == 3,
+            "active standalone fixture exposes installed backend and latents");
+
+    int detachments = 0;
+    int reattachments = 0;
+    rave::clearStandaloneModelBackend(
+        engine,
+        [&] { ++detachments; },
+        [&] {
+            ++reattachments;
+            require(detachments == 1, "empty preset clears only after callback detaches");
+            require(!engine.hasModelBackend() && engine.latentDimensionCount() == 0,
+                    "empty preset reattaches only after backend and latents clear");
+        });
+    require(detachments == 1 && reattachments == 1,
+            "empty preset detaches and reattaches callback exactly once");
+}
+
 void testEmptyAndStalePresetTransitions()
 {
     rave::StandaloneSessionState state;
@@ -290,6 +353,8 @@ int main()
     testStandaloneLoaderFailureStatusOutcomes();
     testCoordinatorOwnedStatusSurvivesDeviceLifecycle();
     testActivationFailureStatusRevisionInterleaving();
+    testCallbackReattachmentGuard();
+    testEmptyPresetClearsInstalledBackendWhileDetached();
     testEmptyAndStalePresetTransitions();
     std::cout << "Standalone preset coordinator tests passed\n";
 }

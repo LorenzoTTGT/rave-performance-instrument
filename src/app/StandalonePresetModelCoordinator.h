@@ -5,9 +5,45 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <utility>
 
 namespace rave
 {
+class RaveAudioEngine;
+
+// Guarantees exactly one callback reattachment across every activation exit.
+class ScopedCallbackReattachment final
+{
+public:
+    explicit ScopedCallbackReattachment(std::function<void()> callback)
+        : reattachCallback(std::move(callback)) {}
+    ScopedCallbackReattachment(const ScopedCallbackReattachment&) = delete;
+    ScopedCallbackReattachment& operator=(const ScopedCallbackReattachment&) = delete;
+    ScopedCallbackReattachment(ScopedCallbackReattachment&&) = delete;
+    ScopedCallbackReattachment& operator=(ScopedCallbackReattachment&&) = delete;
+    ~ScopedCallbackReattachment() { reattach(); }
+
+    void reattach()
+    {
+        if (!attached)
+        {
+            attached = true;
+            reattachCallback();
+        }
+    }
+
+private:
+    std::function<void()> reattachCallback;
+    bool attached = false;
+};
+
+// Clears an explicit no-model standalone state only while the device callback
+// is detached, and guarantees callback restoration on every normal exit.
+void clearStandaloneModelBackend(RaveAudioEngine& engine,
+                                 std::function<void()> detachCallback,
+                                 std::function<void()> reattachCallback);
+
 // Keeps preset controls authoritative until the preset's model identity has been
 // resolved. This prevents an old (or empty) engine from resizing a newly restored
 // standalone session while loading is deferred, pending, or relink-required.
