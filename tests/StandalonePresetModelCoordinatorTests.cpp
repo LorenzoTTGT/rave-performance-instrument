@@ -161,6 +161,36 @@ void testOrdinaryLoadClassifiesSuppressedPresetStates()
             "ordinary active-model candidate keeps RAVE-02 failure behavior");
 }
 
+void testCoordinatorOwnedStatusSurvivesDeviceLifecycle()
+{
+    rave::StandaloneSessionState state;
+    rave::StandalonePresetModelCoordinator coordinator(state);
+    rave::LifecycleStatusRevisionGate gate;
+
+    auto pending = twelveLatentPreset("/missing/preset.ts");
+    require(coordinator.applyPreset(pending, 70), "pending preset applies");
+    require(!coordinator.shouldPublishLifecycleRevision(10, gate),
+            "pending preset status survives old-engine release");
+    require(!coordinator.shouldPublishLifecycleRevision(11, gate),
+            "pending preset status survives old-engine reprepare");
+    coordinator.markPresetModelMissing(70);
+    require(!coordinator.shouldPublishLifecycleRevision(12, gate),
+            "missing/relink status survives device lifecycle revision");
+
+    require(coordinator.reconcileActivatedModel(70, 12)
+                && coordinator.completeActivation(70),
+            "coordinator returns authority after activation");
+    require(!coordinator.shouldPublishLifecycleRevision(12, gate),
+            "already-observed old-engine revision stays suppressed");
+    require(coordinator.shouldPublishLifecycleRevision(13, gate),
+            "genuinely newer lifecycle revision publishes after authority ends");
+
+    auto noModel = twelveLatentPreset({});
+    require(coordinator.applyPreset(noModel, 71), "explicit no-model preset applies");
+    require(!coordinator.shouldPublishLifecycleRevision(14, gate),
+            "explicit no-model status cannot be replaced by old active engine");
+}
+
 void testActivationFailureStatusRevisionInterleaving()
 {
     rave::LifecycleStatusRevisionGate gate;
@@ -201,6 +231,7 @@ int main()
     testFreshMissingPresetRetainsControlsUntilRelinkActivation();
     testActivationReconcilesByIndex();
     testOrdinaryLoadClassifiesSuppressedPresetStates();
+    testCoordinatorOwnedStatusSurvivesDeviceLifecycle();
     testActivationFailureStatusRevisionInterleaving();
     testEmptyAndStalePresetTransitions();
     std::cout << "Standalone preset coordinator tests passed\n";

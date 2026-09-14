@@ -453,8 +453,9 @@ private:
                 const auto file = chooser.getResult();
                 juce::MemoryBlock data;
                 rave::StandaloneSessionState parsed;
-                if (!file.existsAsFile() || !file.loadFileAsData(data) ||
-                    !parsed.deserialize(data.getData(), data.getSize()))
+                if (!file.existsAsFile()
+                    || !rave::StandaloneSessionState::readBoundedPresetFile(file, data)
+                    || !parsed.deserialize(data.getData(), data.getSize()))
                 {
                     safeThis->status.setText("Preset load failed: invalid .ravepreset",
                                              juce::dontSendNotification);
@@ -702,7 +703,8 @@ private:
     void refreshLifecycleStatus()
     {
         const auto snapshot = engine.lifecycleStatusSnapshot();
-        if (!lifecycleStatusGate.shouldPublish(snapshot.revision))
+        if (!presetModelCoordinator.shouldPublishLifecycleRevision(
+                snapshot.revision, lifecycleStatusGate))
             return;
         status.setText(
             rave::lifecycleStatusText(snapshot.diagnostic, snapshot.modelUsable,

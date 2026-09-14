@@ -107,6 +107,35 @@ void testMalformedInput()
     require(!state.deserialize(malformed, sizeof(malformed) - 1), "reject malformed XML");
 }
 
+void testBoundedPresetFileRead()
+{
+    auto exact = juce::File::createTempFile("rave-exact-preset");
+    auto oversized = juce::File::createTempFile("rave-oversized-preset");
+    std::vector<char> exactBytes(rave::StandaloneSessionState::maximumSerializedBytes, 'x');
+    std::vector<char> oversizedBytes(rave::StandaloneSessionState::maximumSerializedBytes + 1, 'y');
+    require(exact.replaceWithData(exactBytes.data(), exactBytes.size()), "write exact-limit file");
+    require(oversized.replaceWithData(oversizedBytes.data(), oversizedBytes.size()),
+            "write oversized file");
+
+    juce::MemoryBlock input;
+    require(rave::StandaloneSessionState::readBoundedPresetFile(exact, input)
+                && input.getSize() == rave::StandaloneSessionState::maximumSerializedBytes,
+            "exact-limit preset file is read within bound");
+    rave::StandaloneSessionState state;
+    state.setDryWet(0.75f);
+    require(!state.deserialize(input.getData(), input.getSize())
+                && std::abs(state.dryWet() - 0.75f) < 0.001f,
+            "invalid exact-limit content rejects transactionally");
+
+    require(!rave::StandaloneSessionState::readBoundedPresetFile(oversized, input)
+                && input.getSize() == 0,
+            "oversized preset is rejected after at most limit plus one byte");
+    require(std::abs(state.dryWet() - 0.75f) < 0.001f,
+            "oversized file rejection preserves existing state");
+    exact.deleteFile();
+    oversized.deleteFile();
+}
+
 void testConcurrentCountAndRealtimeAccess()
 {
     rave::StandaloneSessionState state;
@@ -159,6 +188,7 @@ int main()
     testRoundTripAndMidi();
     testLatestRequestGeneration();
     testMalformedInput();
+    testBoundedPresetFileRead();
     testConcurrentCountAndRealtimeAccess();
     std::cout << "Standalone session state tests passed\n";
 }

@@ -721,6 +721,76 @@ private:
     std::shared_ptr<std::atomic<bool>> rejectLoad;
 };
 
+void testDeferredRestoreDisappearanceBecomesRelinkRequired()
+{
+    auto reject = std::make_shared<std::atomic<bool>>(false);
+    auto modelFile = juce::File::createTempFile("rave-deferred-disappears.ts");
+    require(modelFile.replaceWithText("injected backend ignores file contents"),
+            "create deferred restore model identity");
+    RavePluginProcessor processor([reject] {
+        return std::make_shared<RelinkTwelveLatentBackend>(reject);
+    });
+
+    juce::XmlElement restored("RavePluginState");
+    restored.setAttribute("version", 2);
+    restored.setAttribute("modelPath", modelFile.getFullPathName());
+    restored.setAttribute("dryWet", 1.0);
+    for (int index = 0; index < 8; ++index)
+        restored.setAttribute("macro" + juce::String(index + 1), -0.8 + index * 0.2);
+    auto* latents = restored.createNewChildElement("Latents");
+    latents->setAttribute("count", 4);
+    latents->setAttribute("firstIndex", 8);
+    for (int index = 8; index < 12; ++index)
+        latents->setAttribute("v" + juce::String(index), -0.8 + index * 0.2);
+    auto state = xmlState(restored);
+    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    require(modelFile.deleteFile(), "model disappears before host prepare");
+    processor.prepareToPlay(48000.0, 8);
+    require(processor.isRelinkRequired()
+                && processor.requestedModelPath() == modelFile.getFullPathName()
+                && processor.modelStatus().containsIgnoreCase("relink required"),
+            "newest disappeared deferred restore becomes actionable relink state");
+    juce::MemoryBlock retained;
+    processor.getStateInformation(retained);
+    auto parsed = juce::AudioProcessor::getXmlFromBinary(
+        retained.getData(), static_cast<int>(retained.getSize()));
+    require(parsed != nullptr && parsed->getChildByName("Latents") != nullptr
+                && parsed->getChildByName("Latents")->getIntAttribute("count") == 4,
+            "disappeared restore retains all twelve latent values");
+
+    require(modelFile.replaceWithText("recreated relink model"), "recreate relink model");
+    require(processor.relinkMissingModel(modelFile), "relink API is immediately ready");
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(),
+            "recreated model relinks successfully");
+    require(!processor.isRelinkRequired() && processor.latentDimensionCount() == 12,
+            "successful relink restores model and clears requirement");
+    for (std::size_t index = 0; index < 12; ++index)
+        require(std::abs(processor.latentControl(index) - (-0.8f + float(index) * 0.2f)) < .011f,
+                "successful relink restores retained latent by index");
+    processor.releaseResources();
+
+    auto oldFile = juce::File::createTempFile("rave-stale-deferred.ts");
+    auto newestFile = juce::File::createTempFile("rave-newest-deferred.ts");
+    require(oldFile.replaceWithText("old") && newestFile.replaceWithText("new"),
+            "create stale-generation fixtures");
+    RavePluginProcessor stale([reject] {
+        return std::make_shared<RelinkTwelveLatentBackend>(reject);
+    });
+    restored.setAttribute("modelPath", oldFile.getFullPathName());
+    state = xmlState(restored);
+    stale.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    require(stale.startModelLoad(newestFile), "newer deferred request supersedes restore");
+    require(oldFile.deleteFile(), "stale restored model disappears");
+    stale.prepareToPlay(48000.0, 8);
+    require(waitForModelSettled(stale) && stale.finishModelLoadIfReady(),
+            "newest deferred model activates");
+    require(!stale.isRelinkRequired() && stale.requestedModelPath().isEmpty(),
+            "stale disappearance cannot create relink state");
+    stale.releaseResources();
+    modelFile.deleteFile();
+    newestFile.deleteFile();
+}
+
 void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
 {
     auto reject = std::make_shared<std::atomic<bool>>(false);
@@ -971,6 +1041,7 @@ int main(const int argc, const char* const* argv)
         testPrepareThrowAtReprepareReportsStatus(juce::File(argv[1]));
         testRollbackFailureClearsLatentsAndSerializedModelPath(juce::File(argv[1]));
 #if RAVE_HAS_LIBTORCH
+        testDeferredRestoreDisappearanceBecomesRelinkRequired();
         testMissingRelinkSuppressionAndTwelveLatents(juce::File(argv[1]));
 #endif
         testEditorClosureDuringLoad(juce::File(argv[1]));

@@ -562,13 +562,40 @@ void RavePluginProcessor::timerCallback()
         generation = queuedGeneration;
     }
 
-    if (!modelFile.existsAsFile())
+    // Reconcile generation before interpreting disappearance. A stale queued
+    // path must never create relink state over a newer request.
+    if (generation != requestGeneration.load(std::memory_order_acquire))
     {
         const juce::ScopedLock lock(modelStateLock);
-        hasQueuedModelRestore.store(false, std::memory_order_release);
-        currentModelStatus = "Saved model file is unavailable";
-        currentStatusNeedsLifecycle = false;
-        currentModelRevision.fetch_add(1, std::memory_order_release);
+        if (queuedGeneration == generation)
+        {
+            hasQueuedModelRestore.store(false, std::memory_order_release);
+            queuedRestoreModelFile = juce::File {};
+            queuedRestoreLatents.clear();
+        }
+        return;
+    }
+
+    if (!modelFile.existsAsFile())
+    {
+        {
+            const juce::ScopedLock lock(modelStateLock);
+            if (generation != requestGeneration.load(std::memory_order_acquire)
+                || queuedGeneration != generation)
+                return;
+            hasQueuedModelRestore.store(false, std::memory_order_release);
+            queuedRestoreModelFile = juce::File {};
+            queuedRestoreLatents.clear();
+            requestedMissingModelFile = modelFile;
+            retainedMissingLatents = std::move(restoredLatents);
+            relinkRequired = true;
+            activeModelFile = juce::File {};
+            currentModelStatus = "Saved model is missing; relink required: "
+                + modelFile.getFileName();
+            currentStatusNeedsLifecycle = false;
+            currentModelRevision.fetch_add(1, std::memory_order_release);
+        }
+        engine.setWetSuppressed(true);
         return;
     }
 
@@ -581,15 +608,6 @@ void RavePluginProcessor::timerCallback()
         currentModelStatus = "Waiting for the host audio configuration before restoring "
             + modelFile.getFileName();
         currentStatusNeedsLifecycle = false;
-        return;
-    }
-
-    if (generation != requestGeneration.load(std::memory_order_acquire))
-    {
-        const juce::ScopedLock lock(modelStateLock);
-        hasQueuedModelRestore.store(false, std::memory_order_release);
-        queuedRestoreModelFile = juce::File {};
-        queuedRestoreLatents.clear();
         return;
     }
 

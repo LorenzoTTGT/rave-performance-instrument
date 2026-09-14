@@ -1,5 +1,6 @@
 #pragma once
 
+#include "engine/LifecycleStatusText.h"
 #include "state/StandaloneSessionState.h"
 
 #include <cstddef>
@@ -41,6 +42,8 @@ public:
     [[nodiscard]] bool relinkRequired() const noexcept;
     [[nodiscard]] bool isCurrent(std::uint64_t generation) const noexcept;
     [[nodiscard]] const juce::String& savedModelPath() const noexcept;
+    [[nodiscard]] bool shouldPublishLifecycleRevision(
+        std::uint64_t revision, LifecycleStatusRevisionGate& gate) const noexcept;
 
 private:
     StandaloneSessionState& session;

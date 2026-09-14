@@ -99,4 +99,15 @@ const juce::String& StandalonePresetModelCoordinator::savedModelPath() const noe
 {
     return modelPath;
 }
+
+bool StandalonePresetModelCoordinator::shouldPublishLifecycleRevision(
+    const std::uint64_t revision, LifecycleStatusRevisionGate& gate) const noexcept
+{
+    if (presetControlsAreAuthoritative())
+    {
+        gate.markObserved(revision);
+        return false;
+    }
+    return gate.shouldPublish(revision);
+}
 }

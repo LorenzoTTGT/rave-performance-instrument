@@ -51,6 +51,10 @@ public:
     [[nodiscard]] bool restore(const Snapshot& value);
     [[nodiscard]] bool serialize(juce::MemoryBlock& output) const;
     [[nodiscard]] bool deserialize(const void* data, std::size_t bytes);
+    // Reads at most maximumSerializedBytes + 1, so size validation never
+    // follows an unbounded whole-file allocation.
+    [[nodiscard]] static bool readBoundedPresetFile(const juce::File& file,
+                                                    juce::MemoryBlock& output);
 
 private:
     static constexpr std::size_t maximumStringLength = 4096;

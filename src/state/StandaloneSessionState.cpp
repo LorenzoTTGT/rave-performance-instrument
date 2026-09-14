@@ -253,6 +253,34 @@ bool StandaloneSessionState::serialize(juce::MemoryBlock& output) const
     return true;
 }
 
+bool StandaloneSessionState::readBoundedPresetFile(const juce::File& file,
+                                                    juce::MemoryBlock& output)
+{
+    output.reset();
+    auto stream = file.createInputStream();
+    if (stream == nullptr)
+        return false;
+
+    constexpr auto readLimit = maximumSerializedBytes + 1;
+    output.setSize(readLimit, false);
+    auto bytesRead = std::size_t { 0 };
+    while (bytesRead < readLimit)
+    {
+        const auto chunk = stream->read(static_cast<char*>(output.getData()) + bytesRead,
+                                        static_cast<int>(readLimit - bytesRead));
+        if (chunk <= 0)
+            break;
+        bytesRead += static_cast<std::size_t>(chunk);
+    }
+    if (bytesRead == 0 || bytesRead > maximumSerializedBytes)
+    {
+        output.reset();
+        return false;
+    }
+    output.setSize(bytesRead, false);
+    return true;
+}
+
 bool StandaloneSessionState::deserialize(const void* data, const std::size_t bytes)
 {
     if (data == nullptr || bytes == 0 || bytes > maximumSerializedBytes)
