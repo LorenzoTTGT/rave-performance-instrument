@@ -310,6 +310,14 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     if (restoredModelPath.length() > 4096)
         return;
 
+    // Validation is now complete. Capture the exact callback generations that
+    // this state commit supersedes; a callback arriving after this boundary
+    // must remain pending and authoritative.
+    std::array<std::uint64_t, midiTargetCount> capturedMidiSequences {};
+    for (std::size_t target = 0; target < midiTargetCount; ++target)
+        capturedMidiSequences[target]
+            = midiValueSequences[target].load(std::memory_order_acquire);
+
     const auto restoreParameter = [](juce::AudioParameterFloat& parameter, const float value) {
         parameter.setValueNotifyingHost(parameter.convertTo0to1(value));
     };
@@ -319,6 +327,15 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     {
         restoreParameter(*macroParameters[index], restoredMacros[index]);
         midiControllers[index + 1].store(restoredMidi[index + 1], std::memory_order_relaxed);
+    }
+
+    if (stateRestoreMidiAcknowledgeInterleaveForTesting)
+        stateRestoreMidiAcknowledgeInterleaveForTesting();
+    for (std::size_t target = 0; target < midiTargetCount; ++target)
+    {
+        const auto captured = capturedMidiSequences[target];
+        if (midiValueSequences[target].load(std::memory_order_acquire) == captured)
+            midiPublishedSequences[target].store(captured, std::memory_order_release);
     }
 
     const juce::File restoredModel(restoredModelPath);

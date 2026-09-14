@@ -990,6 +990,74 @@ void testRollbackFailureClearsLatentsAndSerializedModelPath(const juce::File& mo
     processor->releaseResources();
 }
 
+void testStateRestoreReconcilesMidiMailboxes()
+{
+    RavePluginProcessor processor;
+    processor.prepareToPlay(48000.0, 8);
+    juce::AudioBuffer<float> audio(2, 8);
+    audio.clear();
+
+    processor.beginMidiLearn(0);
+    juce::MidiBuffer dryMidi;
+    dryMidi.addEvent(juce::MidiMessage::controllerEvent(1, 70, 127), 0);
+    processor.processBlock(audio, dryMidi);
+    processor.beginMidiLearn(1);
+    juce::MidiBuffer macroMidi;
+    macroMidi.addEvent(juce::MidiMessage::controllerEvent(1, 71, 127), 0);
+    processor.processBlock(audio, macroMidi);
+
+    juce::XmlElement restored("RavePluginState");
+    restored.setAttribute("version", 2);
+    restored.setAttribute("dryWet", 0.25);
+    restored.setAttribute("macro1", -2.0);
+    restored.setAttribute("midiCcDryWet", 70);
+    restored.setAttribute("midiCc1", 71);
+    auto state = xmlState(restored);
+    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    processor.publishPendingMidiParameterChanges();
+    require(std::abs(processor.dryWetParameterReference().convertFrom0to1(
+                         processor.dryWetParameterReference().getValue()) - 0.25f) < 0.001f
+                && std::abs(processor.macroParameterReference(0).convertFrom0to1(
+                                processor.macroParameterReference(0).getValue()) + 2.0f) < 0.001f,
+            "validated state supersedes unpublished pre-restore MIDI values");
+
+    juce::MidiBuffer oldPending;
+    oldPending.addEvent(juce::MidiMessage::controllerEvent(1, 71, 10), 0);
+    processor.processBlock(audio, oldPending);
+    bool injected = false;
+    bool restoredObservedAtBoundary = false;
+    processor.stateRestoreMidiAcknowledgeInterleaveForTesting = [&] {
+        restoredObservedAtBoundary = std::abs(
+            processor.macroParameterReference(0).convertFrom0to1(
+                processor.macroParameterReference(0).getValue()) + 2.0f) < 0.001f;
+        injected = true;
+        juce::MidiBuffer newer;
+        newer.addEvent(juce::MidiMessage::controllerEvent(1, 71, 127), 0);
+        processor.processBlock(audio, newer);
+    };
+    processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    processor.stateRestoreMidiAcknowledgeInterleaveForTesting = {};
+    require(injected && restoredObservedAtBoundary,
+            "state parameters commit before MIDI acknowledgement boundary");
+    processor.publishPendingMidiParameterChanges();
+    require(std::abs(processor.macroParameterReference(0).convertFrom0to1(
+                         processor.macroParameterReference(0).getValue()) - 4.0f) < 0.001f,
+            "newer boundary MIDI remains authoritative and publishes later");
+
+    juce::MidiBuffer pendingBeforeInvalid;
+    pendingBeforeInvalid.addEvent(juce::MidiMessage::controllerEvent(1, 71, 0), 0);
+    processor.processBlock(audio, pendingBeforeInvalid);
+    juce::XmlElement invalid("RavePluginState");
+    invalid.setAttribute("version", 99);
+    const auto invalidState = xmlState(invalid);
+    processor.setStateInformation(invalidState.getData(), static_cast<int>(invalidState.getSize()));
+    processor.publishPendingMidiParameterChanges();
+    require(std::abs(processor.macroParameterReference(0).convertFrom0to1(
+                         processor.macroParameterReference(0).getValue()) + 4.0f) < 0.001f,
+            "rejected malformed state does not acknowledge pending MIDI");
+    processor.releaseResources();
+}
+
 void testLongSysExCallbackAllocationAndMailboxInterleaving()
 {
     RavePluginProcessor processor;
@@ -1076,6 +1144,7 @@ int main(const int argc, const char* const* argv)
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
     testStateSchemaMigrationsBoundsAndMacroAuthority();
     testFactoryAudioAndState();
+    testStateRestoreReconcilesMidiMailboxes();
     testLongSysExCallbackAllocationAndMailboxInterleaving();
     if (argc == 2)
     {

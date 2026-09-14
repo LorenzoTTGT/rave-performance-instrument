@@ -94,6 +94,9 @@ public:
     // Invoked by the non-realtime publisher after capturing a mailbox value
     // and before notifying JUCE. Tests use this to force a newer callback.
     std::function<void()> midiPublishInterleaveForTesting;
+    // Invoked after validated state parameters commit and before captured MIDI
+    // generations are acknowledged.
+    std::function<void()> stateRestoreMidiAcknowledgeInterleaveForTesting;
 
 private:
     void timerCallback() override;
