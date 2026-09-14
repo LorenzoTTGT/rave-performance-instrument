@@ -123,6 +123,24 @@ void testStateSchemaMigrationsBoundsAndMacroAuthority()
     require(processor.modelStatus().containsIgnoreCase("relink required"),"missing model status visible");
     require(std::abs(processor.dryWetParameterReference().convertFrom0to1(processor.dryWetParameterReference().getValue())-.75f)<.001f,"missing restore retains dry/wet");
     require(std::abs(processor.macroParameterReference(0).convertFrom0to1(processor.macroParameterReference(0).getValue())-1.5f)<.001f,"missing restore retains macros");
+
+    juce::XmlElement empty("RavePluginState");
+    empty.setAttribute("version", 2);
+    empty.setAttribute("dryWet", .75);
+    empty.setAttribute("macro1", 1.5);
+    block = xmlState(empty);
+    processor.setStateInformation(block.getData(), int(block.getSize()));
+    require(!processor.isRelinkRequired() && processor.requestedModelPath().isEmpty(),
+            "empty restore clears missing and relink identity");
+    juce::MemoryBlock emptySaved;
+    processor.getStateInformation(emptySaved);
+    parsed = juce::AudioProcessor::getXmlFromBinary(emptySaved.getData(), int(emptySaved.getSize()));
+    require(parsed && parsed->getStringAttribute("modelPath").isEmpty()
+                && !parsed->getBoolAttribute("relinkRequired"),
+            "empty identity serializes after missing identity");
+    require(std::abs(processor.dryWetParameterReference().convertFrom0to1(
+                processor.dryWetParameterReference().getValue()) - .75f) < .001f,
+            "empty restore preserves host dry/wet");
 }
 
 void testFactoryAudioAndState()
@@ -372,15 +390,10 @@ void testRestoreBeforePrepareIsDeferred(const juce::File& modelFile)
     require(restored->modelStatus().containsIgnoreCase(
                 "Waiting for the host audio configuration"),
             "deferred restore status is actionable");
-    require(!restored->startModelLoad(modelFile),
-            "user loads are also deferred before prepare");
-    require(restored->modelStatus().containsIgnoreCase(
-                "Waiting for the host audio configuration"),
-            "deferred load status is actionable");
 
-    // Once the host provides a configuration, the queued restore proceeds.
+    // Once the host provides a configuration, that single restore call
+    // proceeds automatically.
     restored->prepareToPlay(48000.0, 8);
-    restored->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
     require(restored->isModelLoading(), "restore starts once a configuration exists");
     require(waitForModelSettled(*restored), "deferred restore settles");
     require(restored->finishModelLoadIfReady(), "deferred restore activates");

@@ -238,6 +238,11 @@ void RaveAudioEngine::setDryWet(const float newValue) noexcept
     dryWetValue.store(juce::jlimit(0.0f, 1.0f, newValue), std::memory_order_relaxed);
 }
 
+void RaveAudioEngine::setWetSuppressed(const bool shouldSuppress) noexcept
+{
+    wetSuppressed.store(shouldSuppress, std::memory_order_release);
+}
+
 float RaveAudioEngine::dryWet() const noexcept
 {
     return dryWetValue.load(std::memory_order_relaxed);
@@ -622,8 +627,11 @@ void RaveAudioEngine::processAudio(
         const auto delayedClock = delayed ? sampleClock - transportLatencySamples : 0;
         const auto outputFrame = delayedClock / inferenceQuantumSamples;
 
-        const auto targetMix = dryWet();
-        if (smoothedDryWet < targetMix)
+        const auto suppressWet = wetSuppressed.load(std::memory_order_acquire);
+        const auto targetMix = suppressWet ? 0.0f : dryWet();
+        if (suppressWet)
+            smoothedDryWet = 0.0f;
+        else if (smoothedDryWet < targetMix)
             smoothedDryWet = std::min(targetMix, smoothedDryWet + smoothingStep);
         else
             smoothedDryWet = std::max(targetMix, smoothedDryWet - smoothingStep);

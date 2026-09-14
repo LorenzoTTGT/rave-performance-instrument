@@ -102,6 +102,7 @@ public:
     [[nodiscard]] bool hasUsableModel() const;
 
     void setDryWet(float newValue) noexcept;
+    void setWetSuppressed(bool shouldSuppress) noexcept;
     [[nodiscard]] float dryWet() const noexcept;
     [[nodiscard]] std::size_t latentDimensionCount() const noexcept;
     [[nodiscard]] float latentControl(std::size_t index) const noexcept;
@@ -207,6 +208,7 @@ private:
     std::vector<std::uint64_t> eligibleFrameTags;
     std::vector<bool> committedWet;
     std::atomic<float> dryWetValue { 0.0f };
+    std::atomic<bool> wetSuppressed { false };
     float smoothedDryWet = 0.0f;
     float smoothingStep = 1.0f;
     std::size_t fadeSamples = 1;

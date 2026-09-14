@@ -77,6 +77,10 @@ void RavePluginProcessor::prepareToPlay(const double sampleRate, const int sampl
     // Surface an incompatible reprepare or failing checked reset/start in the
     // visible status instead of leaving the previous active claim up.
     refreshLifecycleStatus();
+    // A host may restore state before supplying its audio configuration.
+    // Starting the retained newest request here avoids requiring a second
+    // setStateInformation call.
+    timerCallback();
 }
 
 void RavePluginProcessor::refreshLifecycleStatus()
@@ -178,21 +182,39 @@ void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData
     }
     state.setAttribute("midiCcDryWet", midiControllers[0].load(std::memory_order_relaxed));
 
+    bool savedRelinkRequired = false;
+    juce::File savedModel;
+    std::vector<float> savedRelinkLatents;
     {
         const juce::ScopedLock lock(modelStateLock);
-        const auto savedModel = relinkRequired ? requestedMissingModelFile : activeModelFile;
-        if (savedModel != juce::File {})
-            state.setAttribute("modelPath", savedModel.getFullPathName());
-        state.setAttribute("relinkRequired", relinkRequired);
+        savedRelinkRequired = relinkRequired;
+        if (savedRelinkRequired)
+        {
+            savedModel = requestedMissingModelFile;
+            savedRelinkLatents = retainedMissingLatents;
+        }
+        else if (hasQueuedModelRestore.load(std::memory_order_acquire))
+        {
+            savedModel = queuedRestoreModelFile;
+            savedRelinkLatents = queuedRestoreLatents;
+        }
+        else
+        {
+            savedModel = activeModelFile;
+        }
     }
+    if (savedModel != juce::File {})
+        state.setAttribute("modelPath", savedModel.getFullPathName());
+    state.setAttribute("relinkRequired", savedRelinkRequired);
 
     auto* const latents = state.createNewChildElement("Latents");
-    const auto latentCount = relinkRequired ? retainedMissingLatents.size() : engine.latentDimensionCount();
+    const bool useSavedLatents = !savedRelinkLatents.empty();
+    const auto latentCount = useSavedLatents ? savedRelinkLatents.size() : engine.latentDimensionCount();
     const auto dynamicCount = latentCount > macroCount ? latentCount - macroCount : 0;
     latents->setAttribute("count", static_cast<int>(dynamicCount));
     latents->setAttribute("firstIndex", static_cast<int>(macroCount));
     for (std::size_t index = macroCount; index < latentCount; ++index)
-        latents->setAttribute("v" + juce::String(index), relinkRequired ? retainedMissingLatents[index] : engine.latentControl(index));
+        latents->setAttribute("v" + juce::String(index), useSavedLatents ? savedRelinkLatents[index] : engine.latentControl(index));
 
     juce::MemoryBlock candidate;
     copyXmlToBinary(state, candidate);
@@ -280,14 +302,34 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     const juce::File restoredModel(restoredModelPath);
     requestGeneration.fetch_add(1, std::memory_order_acq_rel);
     if (restoredModel.existsAsFile())
-        static_cast<void>(queueModelRequest(restoredModel, std::move(restoredLatents), false));
-    else if (restoredModel != juce::File {})
     {
-        const juce::ScopedLock lock(modelStateLock);
-        requestedMissingModelFile = restoredModel; retainedMissingLatents = std::move(restoredLatents);
-        relinkRequired = true; hasQueuedModelRestore.store(false, std::memory_order_release);
-        currentModelStatus = "Saved model is missing; relink required: " + restoredModel.getFileName();
-        currentStatusNeedsLifecycle = false; currentModelRevision.fetch_add(1, std::memory_order_release);
+        {
+            const juce::ScopedLock lock(modelStateLock);
+            relinkRequired = false;
+            requestedMissingModelFile = juce::File {};
+            retainedMissingLatents.clear();
+        }
+        static_cast<void>(queueModelRequest(restoredModel, std::move(restoredLatents), false));
+    }
+    else
+    {
+        const bool isMissing = restoredModel != juce::File {};
+        {
+            const juce::ScopedLock lock(modelStateLock);
+            queuedRestoreModelFile = juce::File {};
+            queuedRestoreLatents.clear();
+            hasQueuedModelRestore.store(false, std::memory_order_release);
+            requestedMissingModelFile = isMissing ? restoredModel : juce::File {};
+            retainedMissingLatents = isMissing ? std::move(restoredLatents) : std::vector<float> {};
+            relinkRequired = isMissing;
+            activeModelFile = juce::File {};
+            currentModelStatus = isMissing
+                ? "Saved model is missing; relink required: " + restoredModel.getFileName()
+                : "No model loaded";
+            currentStatusNeedsLifecycle = false;
+            currentModelRevision.fetch_add(1, std::memory_order_release);
+        }
+        engine.setWetSuppressed(true);
     }
 
     if (const auto* const messageManager = juce::MessageManager::getInstanceWithoutCreating();
@@ -348,20 +390,23 @@ juce::String RavePluginProcessor::requestedModelPath() const
 bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile, std::vector<float> values, bool)
 {
 #if RAVE_HAS_LIBTORCH
-    // Never qualify a candidate against invented defaults: defer until a real
-    // host/device configuration exists.
+    const auto generation = requestGeneration.load(std::memory_order_acquire);
+    // Retain the newest request until a real host/device configuration exists.
     const auto configuration = engine.runtimeConfiguration();
     if (configuration.sampleRate <= 0.0 || configuration.maximumBlockSize == 0)
     {
         const juce::ScopedLock lock(modelStateLock);
+        queuedRestoreModelFile = modelFile;
+        queuedRestoreLatents = std::move(values);
+        queuedGeneration = generation;
+        hasQueuedModelRestore.store(true, std::memory_order_release);
         currentModelStatus = "Waiting for the host audio configuration before loading a model";
         currentStatusNeedsLifecycle = false;
-        return false;
+        return true;
     }
 
     if (!modelFile.existsAsFile() || modelLoader == nullptr)
         return false;
-    const auto generation = requestGeneration.load(std::memory_order_acquire);
     if (modelLoader->state() == rave::BackgroundModelLoader::State::loading)
     {
         const juce::ScopedLock lock(modelStateLock);
@@ -489,10 +534,12 @@ void RavePluginProcessor::timerCallback()
 
     juce::File modelFile;
     std::vector<float> restoredLatents;
+    std::uint64_t generation = 0;
     {
         const juce::ScopedLock lock(modelStateLock);
         modelFile = queuedRestoreModelFile;
         restoredLatents = queuedRestoreLatents;
+        generation = queuedGeneration;
     }
 
     if (!modelFile.existsAsFile())
@@ -517,12 +564,23 @@ void RavePluginProcessor::timerCallback()
         return;
     }
 
+    if (generation != requestGeneration.load(std::memory_order_acquire))
+    {
+        const juce::ScopedLock lock(modelStateLock);
+        hasQueuedModelRestore.store(false, std::memory_order_release);
+        queuedRestoreModelFile = juce::File {};
+        queuedRestoreLatents.clear();
+        return;
+    }
+
     if (modelLoader->start(modelFile.getFullPathName().toStdString(), configuration))
     {
         const juce::ScopedLock lock(modelStateLock);
+        // Generation was checked immediately before start; activation checks
+        // it again so a superseding request can never mutate visible state.
         pendingModelFile = modelFile;
         pendingLatentRestore = std::move(restoredLatents);
-        pendingGeneration = queuedGeneration;
+        pendingGeneration = generation;
         queuedRestoreModelFile = juce::File {};
         queuedRestoreLatents.clear();
         hasQueuedModelRestore.store(false, std::memory_order_release);
@@ -608,6 +666,7 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
     {
         activeModelFile = modelFile;
         relinkRequired = false; requestedMissingModelFile = juce::File {}; retainedMissingLatents.clear();
+        engine.setWetSuppressed(false);
         currentModelStatus.clear();
         currentStatusNeedsLifecycle = false;
     }
