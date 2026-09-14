@@ -68,6 +68,18 @@ public:
     std::thread::id processThread;
 };
 
+class CountBackend final : public rave::ModelBackend
+{
+public:
+    explicit CountBackend(std::size_t count) : latentCount(count) {}
+    bool load(const std::string&, std::string&) override { return true; }
+    void prepare(double, std::size_t) override {}
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return latentCount; }
+    bool process(std::span<const float>, std::span<const float>, std::span<float>) override { return true; }
+    std::size_t latentCount;
+};
+
 class BlockingBackend final : public rave::ModelBackend
 {
 public:
@@ -386,6 +398,18 @@ void testThreadStartFailureIsContained()
     worker.stop();
 }
 
+void testLatentBoundaryRejectsBeforeWorkerMutation()
+{
+    rave::InferenceWorker worker;
+    worker.setBackend(std::make_shared<CountBackend>(4096));
+    require(worker.latentDimensionCount() == 4096, "worker accepts 4096 latents");
+    bool rejected = false;
+    try { worker.setBackend(std::make_shared<CountBackend>(4097)); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected && worker.latentDimensionCount() == 4096,
+            "worker rejects 4097 transactionally before allocation");
+}
+
 int main()
 {
     testLifecycleAndProcessing();
@@ -396,5 +420,6 @@ int main()
     testNonFiniteOutputIsDropped();
     testQueueSaturationIsBoundedAndCounted();
     testRepeatedPrepareStartStopAndReplacementRemainsBounded();
+    testLatentBoundaryRejectsBeforeWorkerMutation();
     std::cout << "InferenceWorker tests passed\n";
 }

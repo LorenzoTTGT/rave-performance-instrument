@@ -88,6 +88,9 @@ public:
     // Deterministic test seam invoked after a failed-load lifecycle snapshot
     // and before its status commit. Production leaves this empty.
     std::function<void()> failedLoadStatusInterleaveForTesting;
+    // Invoked by the non-realtime publisher after capturing a mailbox value
+    // and before notifying JUCE. Tests use this to force a newer callback.
+    std::function<void()> midiPublishInterleaveForTesting;
 
 private:
     void timerCallback() override;
@@ -104,7 +107,9 @@ private:
     std::array<juce::AudioParameterFloat*, macroCount> macroParameters {};
     std::array<std::atomic<int>, midiTargetCount> midiControllers;
     std::atomic<int> learningMidiTarget { -1 };
-    std::atomic<std::uint16_t> pendingMidiParameterMask { 0 };
+    std::array<std::atomic<float>, midiTargetCount> midiLatestValues {};
+    std::array<std::atomic<std::uint64_t>, midiTargetCount> midiValueSequences {};
+    std::array<std::atomic<std::uint64_t>, midiTargetCount> midiPublishedSequences {};
 #if RAVE_HAS_LIBTORCH
     std::unique_ptr<rave::BackgroundModelLoader> modelLoader;
 #endif

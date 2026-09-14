@@ -16,6 +16,25 @@
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
 
+namespace allocationAudit
+{
+std::atomic<bool> enabled { false };
+std::atomic<std::size_t> count { 0 };
+}
+
+void* operator new(const std::size_t size)
+{
+    if (allocationAudit::enabled.load(std::memory_order_relaxed))
+        allocationAudit::count.fetch_add(1, std::memory_order_relaxed);
+    if (auto* memory = std::malloc(size)) return memory;
+    throw std::bad_alloc();
+}
+void* operator new[](const std::size_t size) { return ::operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+
 namespace
 {
 void require(const bool condition, const char* const message)
@@ -214,6 +233,7 @@ void testFactoryAudioAndState()
     juce::MidiBuffer restoredMidi;
     restoredMidi.addEvent(juce::MidiMessage::controllerEvent(1, 74, 0), 0);
     restored->processBlock(buffer, restoredMidi);
+    dynamic_cast<RavePluginProcessor&>(*restored).publishPendingMidiParameterChanges();
     auto* restoredMacro1 = findParameter(*restored, "macro1");
     require(restoredMacro1 != nullptr, "restored macro parameter exposed");
     require(std::abs(restoredMacro1->convertFrom0to1(restoredMacro1->getValue()) + 4.0f) < 0.001f,
@@ -846,6 +866,45 @@ void testRollbackFailureClearsLatentsAndSerializedModelPath(const juce::File& mo
 
     processor->releaseResources();
 }
+
+void testLongSysExCallbackAllocationAndMailboxInterleaving()
+{
+    RavePluginProcessor processor;
+    processor.prepareToPlay(48000.0, 8);
+    juce::AudioBuffer<float> audio(2, 8);
+    audio.clear();
+
+    std::vector<std::uint8_t> payload(65536, 0x55);
+    juce::MidiBuffer sysEx;
+    sysEx.addEvent(juce::MidiMessage::createSysExMessage(payload.data(),
+                                                         static_cast<int>(payload.size())), 0);
+    allocationAudit::count.store(0, std::memory_order_relaxed);
+    allocationAudit::enabled.store(true, std::memory_order_release);
+    processor.processBlock(audio, sysEx);
+    allocationAudit::enabled.store(false, std::memory_order_release);
+    require(allocationAudit::count.load(std::memory_order_acquire) == 0,
+            "long SysEx is inspected without callback allocation");
+
+    processor.beginMidiLearn(1);
+    juce::MidiBuffer first;
+    first.addEvent(juce::MidiMessage::controllerEvent(1, 74, 10), 0);
+    processor.processBlock(audio, first);
+    bool injected = false;
+    processor.midiPublishInterleaveForTesting = [&] {
+        if (injected) return;
+        injected = true;
+        juce::MidiBuffer newer;
+        newer.addEvent(juce::MidiMessage::controllerEvent(1, 74, 127), 0);
+        processor.processBlock(audio, newer);
+    };
+    processor.publishPendingMidiParameterChanges();
+    processor.midiPublishInterleaveForTesting = {};
+    processor.publishPendingMidiParameterChanges();
+    auto& macro = processor.macroParameterReference(0);
+    require(std::abs(macro.convertFrom0to1(macro.getValue()) - 4.0f) < 0.001f,
+            "forced callback/publisher interleaving converges to newest MIDI value");
+    processor.releaseResources();
+}
 } // namespace
 
 int main(const int argc, const char* const* argv)
@@ -853,6 +912,7 @@ int main(const int argc, const char* const* argv)
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
     testStateSchemaMigrationsBoundsAndMacroAuthority();
     testFactoryAudioAndState();
+    testLongSysExCallbackAllocationAndMailboxInterleaving();
     if (argc == 2)
     {
         testModelAndLatentRecall(juce::File(argv[1]));

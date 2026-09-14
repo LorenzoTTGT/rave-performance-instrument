@@ -17,6 +17,8 @@ void RaveAudioEngine::setModelBackend(ModelBackendPtr backend)
 
     if (inferenceWorker.isRunning())
         throw std::logic_error("Stop the audio device before replacing the model backend");
+    if (backend != nullptr && backend->latentDimensionCount() > maximumLatentDimensions)
+        throw std::invalid_argument("Model exceeds the 4096 latent dimension limit");
 
     modelLatentDimensionCount.store(
         backend != nullptr ? backend->latentDimensionCount() : 0,
@@ -91,6 +93,11 @@ bool RaveAudioEngine::activateModelBackend(ModelBackendPtr candidate, std::strin
 
     if (candidate == nullptr)
         return fail("candidate backend was empty");
+
+    // Reject before lifecycle or worker mutation so bypass callers retain the
+    // complete previous model and status transactionally.
+    if (candidate->latentDimensionCount() > maximumLatentDimensions)
+        return fail("candidate exceeds the 4096 latent dimension limit");
 
     // The diagnostic is always defined: cleared up front, set on any failure.
     if (failureReason != nullptr)

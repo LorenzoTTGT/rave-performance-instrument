@@ -1,5 +1,7 @@
 #include "engine/InferenceWorker.h"
 
+#include "model/ModelQualification.h"
+
 #include <chrono>
 #include <cmath>
 #include <span>
@@ -18,6 +20,10 @@ void InferenceWorker::setBackend(ModelBackendPtr newBackend)
 {
     if (isRunning())
         throw std::logic_error("Cannot replace an inference backend while the worker is running");
+
+    if (newBackend != nullptr
+        && newBackend->latentDimensionCount() > maximumLatentDimensions)
+        throw std::invalid_argument("Inference backend exceeds the 4096 latent dimension limit");
 
     backend = std::move(newBackend);
 

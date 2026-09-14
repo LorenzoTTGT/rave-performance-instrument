@@ -22,9 +22,7 @@ Deterministic tests qualify lifecycle behavior, exact transport timing, variable
 ## Known priority gaps
 
 1. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
-2. Macro authority over latent dimensions 1–8 still needs one unambiguous serialized source.
-3. Plugin-state migration from the initial float-only format needs broader migration coverage.
-4. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work. Hardware, DAW, soak, and visual observation are not claimed by the deterministic RAVE-04 checks.
+2. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work. Hardware, DAW, soak, and visual observation are not claimed by the deterministic RAVE-04 checks.
 
 ## Phases
 
@@ -90,8 +88,8 @@ Depends on: RAVE-02 verified. Final audio acceptance also depends on RAVE-03.
 
 - [x] Preserve standalone session latent values across device callback reprepare, controls, and model activation; plugin lifecycle coverage remains in the existing engine tests.
 - [x] Surface missing standalone/plugin model paths as relink-required and reject stale standalone loader results with a monotonic request generation.
-- [ ] Define macro authority over latent dimensions 1–8 and remove duplicate/ambiguous serialized sources.
-- [x] Bound standalone serialized latent counts and validate standalone state versions; plugin migration from the initial float-only state remains a known gap.
+- [x] Define host macro parameters as authoritative for latent dimensions 1–8; plugin schema v2 serializes only dynamic latents from index 8 onward.
+- [x] Bound standalone/plugin serialized latent counts, validate standalone state versions, and migrate the initial float-only plugin state format.
 - [x] Add explicit model relinking when a saved same-machine path is unavailable.
 - [x] Add standalone MIDI input identity and one-selected-input callback wiring, plus learn, clear/reassign behavior for dry/wet and every scrolling latent row.
 - [x] Add bounded versioned standalone `.ravepreset` Save/Load state for model identity, every latent value, dry/wet, MIDI assignments/input, and audio setup.

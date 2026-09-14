@@ -640,9 +640,11 @@ private:
         deviceManager.removeAudioCallback(&engine);
         std::string failure;
         bool activated = false;
+        std::uint64_t activationOutcomeRevision = engine.lifecycleRevision();
         try
         {
             activated = engine.activateModelBackend(std::move(result.backend), &failure);
+            activationOutcomeRevision = engine.lifecycleStatusSnapshot().revision;
         }
         catch (const std::exception& exception)
         {
@@ -668,7 +670,9 @@ private:
             }
             status.setText("Model activation failed: " + juce::String(failure),
                            juce::dontSendNotification);
-            lifecycleStatusGate.markObserved(engine.lifecycleStatusSnapshot().revision);
+            // Preserve only the activation outcome. Reattachment may publish a
+            // newer reset/start failure that must remain visible.
+            lifecycleStatusGate.markObserved(activationOutcomeRevision);
             startQueuedRequestIfAny();
             return;
         }

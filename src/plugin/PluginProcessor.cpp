@@ -50,6 +50,12 @@ RavePluginProcessor::RavePluginProcessor(std::function<rave::ModelBackendPtr()> 
 
     for (auto& controller : midiControllers)
         controller.store(-1, std::memory_order_relaxed);
+    for (std::size_t target = 0; target < midiTargetCount; ++target)
+    {
+        midiLatestValues[target].store(0.0f, std::memory_order_relaxed);
+        midiValueSequences[target].store(0, std::memory_order_relaxed);
+        midiPublishedSequences[target].store(0, std::memory_order_relaxed);
+    }
 
 #if RAVE_HAS_LIBTORCH
     modelLoader = std::make_unique<rave::BackgroundModelLoader>(
@@ -135,7 +141,17 @@ void RavePluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
     applyMidi(midiMessages);
-    engine.setDryWet(dryWetParameter != nullptr ? dryWetParameter->get() : 0.0f);
+    const auto realtimeParameterValue = [this](const std::size_t target,
+                                                juce::AudioParameterFloat* const parameter) {
+        const auto latestSequence = midiValueSequences[target].load(std::memory_order_acquire);
+        const auto publishedSequence = midiPublishedSequences[target].load(std::memory_order_acquire);
+        return latestSequence != publishedSequence
+            ? parameter->convertFrom0to1(midiLatestValues[target].load(std::memory_order_relaxed))
+            : parameter->get();
+    };
+    engine.setDryWet(dryWetParameter != nullptr
+                         ? realtimeParameterValue(0, dryWetParameter)
+                         : 0.0f);
 
     constexpr std::size_t maximumSupportedChannels = 2;
     const auto channelCount = static_cast<std::size_t>(buffer.getNumChannels());
@@ -155,7 +171,8 @@ void RavePluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     const auto controlledLatents = std::min(macroCount, engine.latentDimensionCount());
     for (std::size_t index = 0; index < controlledLatents; ++index)
-        static_cast<void>(engine.setLatentControl(index, macroParameters[index]->get()));
+        static_cast<void>(engine.setLatentControl(
+            index, realtimeParameterValue(index + 1, macroParameters[index])));
 
     engine.processAudio(inputs.data(),
                         static_cast<int>(channelCount),
@@ -597,17 +614,19 @@ void RavePluginProcessor::applyMidi(juce::MidiBuffer& midiMessages) noexcept
 {
     for (const auto metadata : midiMessages)
     {
-        const auto message = metadata.getMessage();
-        if (!message.isController())
+        // Inspect JUCE's non-owning event bytes directly. getMessage() may
+        // allocate by constructing an owning MidiMessage for long SysEx data.
+        const auto* const data = metadata.data;
+        if (data == nullptr || metadata.numBytes < 3 || (data[0] & 0xf0u) != 0xb0u)
             continue;
 
-        const auto controller = message.getControllerNumber();
+        const auto controller = static_cast<int>(data[1] & 0x7fu);
         const auto learnedTarget = learningMidiTarget.exchange(-1, std::memory_order_acq_rel);
         if (learnedTarget >= 0 && learnedTarget < static_cast<int>(midiTargetCount))
             midiControllers[static_cast<std::size_t>(learnedTarget)].store(
                 controller, std::memory_order_relaxed);
 
-        const auto normalizedValue = static_cast<float>(message.getControllerValue()) / 127.0f;
+        const auto normalizedValue = static_cast<float>(data[2] & 0x7fu) / 127.0f;
         for (std::size_t target = 0; target < midiTargetCount; ++target)
         {
             if (midiControllers[target].load(std::memory_order_relaxed) != controller)
@@ -616,12 +635,8 @@ void RavePluginProcessor::applyMidi(juce::MidiBuffer& midiMessages) noexcept
             auto* const parameter = target == 0 ? dryWetParameter : macroParameters[target - 1];
             if (parameter != nullptr)
             {
-                // AudioParameterFloat::setValue is an atomic value update. Do
-                // not notify listeners/host from the callback: JUCE's notify
-                // path acquires its listener lock.
-                static_cast<juce::AudioProcessorParameter*>(parameter)->setValue(normalizedValue);
-                pendingMidiParameterMask.fetch_or(
-                    static_cast<std::uint16_t>(1u << target), std::memory_order_release);
+                midiLatestValues[target].store(normalizedValue, std::memory_order_relaxed);
+                midiValueSequences[target].fetch_add(1, std::memory_order_release);
             }
         }
     }
@@ -629,15 +644,21 @@ void RavePluginProcessor::applyMidi(juce::MidiBuffer& midiMessages) noexcept
 
 void RavePluginProcessor::publishPendingMidiParameterChanges()
 {
-    const auto pending = pendingMidiParameterMask.exchange(0, std::memory_order_acq_rel);
     for (std::size_t target = 0; target < midiTargetCount; ++target)
     {
-        if ((pending & static_cast<std::uint16_t>(1u << target)) == 0)
+        const auto sequence = midiValueSequences[target].load(std::memory_order_acquire);
+        if (sequence == midiPublishedSequences[target].load(std::memory_order_relaxed))
             continue;
+        const auto value = midiLatestValues[target].load(std::memory_order_relaxed);
+        if (midiPublishInterleaveForTesting)
+            midiPublishInterleaveForTesting();
         auto* const parameter = target == 0 ? dryWetParameter : macroParameters[target - 1];
         if (parameter != nullptr)
-            parameter->setValueNotifyingHost(
-                static_cast<juce::AudioProcessorParameter*>(parameter)->getValue());
+            parameter->setValueNotifyingHost(value);
+        // A callback may have published a newer value while JUCE listeners
+        // ran. Never mark that newer mailbox consumed by this stale notify.
+        if (midiValueSequences[target].load(std::memory_order_acquire) == sequence)
+            midiPublishedSequences[target].store(sequence, std::memory_order_release);
     }
 }
 

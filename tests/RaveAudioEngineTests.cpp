@@ -1416,6 +1416,9 @@ void testCandidateFailureStatusUsesPostReattachState()
             "activation failure preserves the candidate cause");
     require(failureReason.find("previous model retained") != std::string::npos,
             "activation-time outcome records successful rollback");
+    rave::LifecycleStatusRevisionGate statusGate;
+    const auto activationOutcomeRevision = engine.lifecycleStatusSnapshot().revision;
+    statusGate.markObserved(activationOutcomeRevision);
 
     engine.release();
     engine.prepare(48000.0, 4, 2); // callback reattachment reset now fails
@@ -1426,6 +1429,9 @@ void testCandidateFailureStatusUsesPostReattachState()
                                                    engine.latentDimensionCount(),
                                                    "Audio pass-through ready - no model loaded");
     const auto snapshot = engine.lifecycleStatusSnapshot();
+    require(snapshot.revision > activationOutcomeRevision
+                && statusGate.shouldPublish(snapshot.revision),
+            "reattach reset failure is newer than and supersedes candidate failure event");
     const rave::RaveAudioEngine::LifecycleStatusSnapshot abandonedSnapshot {
         snapshot.revision, false, false, "dry pass-through", 2
     };
@@ -1562,6 +1568,35 @@ void testRuntimeNonFiniteOutputFallsBackToDry()
     engine.release();
 }
 
+void testPublicEngineLatentBoundaryIsTransactional()
+{
+    rave::RaveAudioEngine engine;
+    engine.prepare(48000.0, 4, 2);
+    auto accepted = std::make_shared<ResetCountingBackend>(100, 4096);
+    require(engine.activateModelBackend(accepted), "engine activation accepts 4096 latents");
+    const auto before = engine.lifecycleStatusSnapshot();
+    std::string failure;
+    require(!engine.activateModelBackend(std::make_shared<ResetCountingBackend>(100, 4097),
+                                         &failure),
+            "engine activation rejects 4097 latents");
+    const auto after = engine.lifecycleStatusSnapshot();
+    require(failure.find("4096") != std::string::npos
+                && after.modelInstalled == before.modelInstalled
+                && after.modelUsable == before.modelUsable
+                && after.latentDimensionCount == before.latentDimensionCount
+                && after.revision == before.revision,
+            "oversized activation preserves prior state and lifecycle status");
+    engine.release();
+
+    rave::RaveAudioEngine direct;
+    direct.setModelBackend(std::make_shared<ResetCountingBackend>(100, 4096));
+    bool rejected = false;
+    try { direct.setModelBackend(std::make_shared<ResetCountingBackend>(100, 4097)); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected && direct.latentDimensionCount() == 4096 && direct.hasModelBackend(),
+            "direct installation rejects 4097 before replacing accepted backend");
+}
+
 void testTwelveLatentsSurviveLifecycleAndReplacement()
 {
     rave::RaveAudioEngine engine;
@@ -1615,6 +1650,7 @@ int main()
     testLifecycleStatusFormatterCoversAllStates();
     testRepeatedPrepareReleaseCyclesRemainBounded();
     testRuntimeNonFiniteOutputFallsBackToDry();
+    testPublicEngineLatentBoundaryIsTransactional();
     testTwelveLatentsSurviveLifecycleAndReplacement();
     std::cout << "RaveAudioEngine tests passed\n";
 }
