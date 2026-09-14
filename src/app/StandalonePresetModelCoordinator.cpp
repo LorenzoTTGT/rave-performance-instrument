@@ -21,18 +21,22 @@ bool StandalonePresetModelCoordinator::applyPreset(
     return true;
 }
 
-void StandalonePresetModelCoordinator::beginOrdinaryRequest(const std::uint64_t generation) noexcept
+bool StandalonePresetModelCoordinator::beginModelRequest(
+    const std::uint64_t generation,
+    const bool explicitlyReplacesIdentity) noexcept
 {
+    // An ordinary user load after an empty or missing preset is still an
+    // authoritative replacement: a prior model must remain muted and the
+    // preset-shaped controls must not be resized by the old engine. In the
+    // normal active state it remains a RAVE-02 candidate load.
+    const auto replacesSuppressedState = wetMustBeSuppressed();
+    const auto replacement = explicitlyReplacesIdentity || replacesSuppressedState;
     currentGeneration = generation;
-    state = ModelState::engineAuthoritative;
-}
-
-void StandalonePresetModelCoordinator::beginReplacementRequest(
-    const std::uint64_t generation) noexcept
-{
-    currentGeneration = generation;
-    if (state != ModelState::noModel)
+    if (replacement && state != ModelState::noModel)
         state = ModelState::presetPending;
+    else if (!replacement)
+        state = ModelState::engineAuthoritative;
+    return replacement;
 }
 
 void StandalonePresetModelCoordinator::markPresetModelMissing(

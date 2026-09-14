@@ -545,14 +545,10 @@ private:
                       const std::optional<std::uint64_t> generation = std::nullopt)
     {
         const auto requestGeneration = generation.value_or(requestGate.begin());
-        const auto replacesPresetIdentity = replacement || relink;
+        const auto replacesPresetIdentity = presetModelCoordinator.beginModelRequest(
+            requestGeneration, replacement || relink);
         if (replacesPresetIdentity)
-        {
-            presetModelCoordinator.beginReplacementRequest(requestGeneration);
             engine.setWetSuppressed(true);
-        }
-        else
-            presetModelCoordinator.beginOrdinaryRequest(requestGeneration);
         startModelRequest(ModelRequest{file, requestGeneration, relink, replacesPresetIdentity});
     }
 

@@ -25,8 +25,11 @@ public:
 
     [[nodiscard]] bool applyPreset(const StandaloneSessionState::Snapshot& preset,
                                    std::uint64_t generation);
-    void beginOrdinaryRequest(std::uint64_t generation) noexcept;
-    void beginReplacementRequest(std::uint64_t generation) noexcept;
+    // Returns whether the request replaces a preset-owned/no-model state and
+    // must keep wet output suppressed until activation succeeds. This is also
+    // the classification used by MainComponent for ordinary Load Model clicks.
+    [[nodiscard]] bool beginModelRequest(std::uint64_t generation,
+                                         bool explicitlyReplacesIdentity) noexcept;
     void markPresetModelMissing(std::uint64_t generation) noexcept;
     void markReplacementFailed(std::uint64_t generation) noexcept;
     [[nodiscard]] bool reconcileActivatedModel(std::uint64_t generation,

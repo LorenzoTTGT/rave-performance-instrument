@@ -68,7 +68,8 @@ void testFreshMissingPresetRetainsControlsUntilRelinkActivation()
     requireAllPresetControls(state, "controls survive fresh engine timer synchronization");
 
     // A pending load still leaves restored controls authoritative.
-    coordinator.beginReplacementRequest(presetGeneration);
+    require(coordinator.beginModelRequest(presetGeneration, true),
+            "explicit preset replacement is classified as replacement");
     require(coordinator.presetControlsAreAuthoritative(), "pending replacement retains preset shape");
     requireAllPresetControls(state, "controls survive pending model load");
 
@@ -79,7 +80,8 @@ void testFreshMissingPresetRetainsControlsUntilRelinkActivation()
     require(coordinator.wetMustBeSuppressed(), "missing model remains aligned dry");
     requireAllPresetControls(state, "controls and mappings survive missing/relink state");
 
-    coordinator.beginReplacementRequest(presetGeneration);
+    require(coordinator.beginModelRequest(presetGeneration, true),
+            "relink request remains a replacement");
     coordinator.markReplacementFailed(presetGeneration);
     require(coordinator.relinkRequired() && coordinator.wetMustBeSuppressed(),
             "failed relink cannot recover wet output");
@@ -114,6 +116,50 @@ void testActivationReconcilesByIndex()
     }
 }
 
+void testOrdinaryLoadClassifiesSuppressedPresetStates()
+{
+    rave::StandaloneSessionState state;
+    rave::StandalonePresetModelCoordinator coordinator(state);
+
+    auto empty = twelveLatentPreset({});
+    require(coordinator.applyPreset(empty, 40), "empty preset applies before ordinary load");
+    require(coordinator.beginModelRequest(41, false),
+            "ordinary load after empty preset is authoritative replacement");
+    require(coordinator.wetMustBeSuppressed() && coordinator.presetControlsAreAuthoritative(),
+            "empty preset remains protected while ordinary load is pending");
+    requireAllPresetControls(state, "ordinary pending load retains empty preset controls");
+    coordinator.markReplacementFailed(41);
+    require(coordinator.wetMustBeSuppressed() && !coordinator.relinkRequired()
+                && coordinator.savedModelPath().isEmpty(),
+            "failed ordinary load keeps empty preset aligned dry without relink");
+
+    require(coordinator.applyPreset(twelveLatentPreset("/missing/model-z12.ts"), 50),
+            "missing preset applies before ordinary load");
+    coordinator.markPresetModelMissing(50);
+    require(coordinator.beginModelRequest(51, false),
+            "ordinary load after missing preset is authoritative replacement");
+    require(coordinator.wetMustBeSuppressed() && coordinator.presetControlsAreAuthoritative(),
+            "missing preset remains protected while ordinary load is pending");
+    coordinator.markReplacementFailed(51);
+    require(coordinator.wetMustBeSuppressed() && coordinator.relinkRequired()
+                && coordinator.savedModelPath() == "/missing/model-z12.ts",
+            "failed ordinary load restores missing preset relink identity");
+
+    require(coordinator.reconcileActivatedModel(51, 12),
+            "ordinary replacement success reconciles controls before wet recovery");
+    require(coordinator.completeActivation(51), "ordinary replacement completes activation");
+    require(!coordinator.wetMustBeSuppressed(),
+            "ordinary replacement success permits wet recovery after controls install");
+
+    rave::StandaloneSessionState activeState;
+    rave::StandalonePresetModelCoordinator activeCoordinator(activeState);
+    require(!activeCoordinator.beginModelRequest(60, false),
+            "ordinary active-model candidate load is not a replacement");
+    require(!activeCoordinator.wetMustBeSuppressed()
+                && !activeCoordinator.presetControlsAreAuthoritative(),
+            "ordinary active-model candidate keeps RAVE-02 failure behavior");
+}
+
 void testEmptyAndStalePresetTransitions()
 {
     rave::StandaloneSessionState state;
@@ -141,6 +187,7 @@ int main()
 {
     testFreshMissingPresetRetainsControlsUntilRelinkActivation();
     testActivationReconcilesByIndex();
+    testOrdinaryLoadClassifiesSuppressedPresetStates();
     testEmptyAndStalePresetTransitions();
     std::cout << "Standalone preset coordinator tests passed\n";
 }
