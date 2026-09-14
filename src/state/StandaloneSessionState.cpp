@@ -1,30 +1,292 @@
 #include "state/StandaloneSessionState.h"
+
 #include <algorithm>
 #include <cmath>
 
-namespace rave {
-namespace { bool finite(float v) { return std::isfinite(v); } }
-StandaloneSessionState::StandaloneSessionState() { setLatentCount(0); }
-void StandaloneSessionState::setLatentCount(std::size_t n) {
- n=std::min(n,maximumLatents); const juce::ScopedLock l(controlLock); auto old=count.load();
- auto nv=n?std::make_unique<std::atomic<float>[]>(n):nullptr; auto nm=std::make_unique<std::atomic<int>[]>(n+1);
- nm[0].store(mappings?mappings[0].load():-1); for(size_t i=0;i<n;++i){nv[i].store(i<old?latentValues[i].load():0);nm[i+1].store(i<old?mappings[i+1].load():-1);}
- latentValues=std::move(nv); mappings=std::move(nm); count.store(n,std::memory_order_release);
+namespace rave
+{
+namespace
+{
+bool finite(const float value)
+{
+    return std::isfinite(value);
 }
-size_t StandaloneSessionState::latentCount()const noexcept{return count.load(std::memory_order_acquire);}
-float StandaloneSessionState::latent(size_t i)const noexcept{return i<latentCount()?latentValues[i].load():0;}
-bool StandaloneSessionState::setLatent(size_t i,float v)noexcept{if(i>=latentCount()||!finite(v))return false;latentValues[i].store(std::clamp(v,-4.f,4.f));return true;}
-void StandaloneSessionState::setDryWet(float v)noexcept{if(finite(v))mix.store(std::clamp(v,0.f,1.f));}
-float StandaloneSessionState::dryWet()const noexcept{return mix.load();}
-void StandaloneSessionState::beginMidiLearn(int t)noexcept{if(t==dryWetTarget||(t>=0&&size_t(t)<latentCount()))learning.store(t);}
-void StandaloneSessionState::clearMidiMapping(int t)noexcept{auto i=t==dryWetTarget?0:t+1;if(i>=0&&size_t(i)<=latentCount())mappings[i].store(-1);}
-int StandaloneSessionState::midiController(int t)const noexcept{auto i=t==dryWetTarget?0:t+1;return i>=0&&size_t(i)<=latentCount()?mappings[i].load():-1;}
-bool StandaloneSessionState::applyMidiCc(int cc,int value)noexcept{if(cc<0||cc>127||value<0||value>127)return false;auto learned=learning.exchange(-2);if(learned>=-1){for(size_t i=0;i<=latentCount();++i)if(mappings[i].load()==cc)mappings[i].store(-1);mappings[learned==dryWetTarget?0:size_t(learned+1)].store(cc);}bool hit=false;float n=float(value)/127.f;if(mappings[0].load()==cc){setDryWet(n);hit=true;}for(size_t i=0;i<latentCount();++i)if(mappings[i+1].load()==cc){setLatent(i,-4.f+8.f*n);hit=true;}return hit;}
-void StandaloneSessionState::setModelPath(juce::String v){const juce::ScopedLock l(controlLock);identity.modelPath=v.substring(0,maximumStringLength);}
-void StandaloneSessionState::setMidiInputId(juce::String v){const juce::ScopedLock l(controlLock);identity.midiInputId=v.substring(0,maximumStringLength);}
-void StandaloneSessionState::setAudioSetup(juce::String t,juce::String o,juce::String i){const juce::ScopedLock l(controlLock);identity.audioDeviceType=t.substring(0,maximumStringLength);identity.audioOutputId=o.substring(0,maximumStringLength);identity.audioInputId=i.substring(0,maximumStringLength);}
-StandaloneSessionState::Snapshot StandaloneSessionState::snapshot()const{const juce::ScopedLock l(controlLock);auto s=identity;s.dryWet=dryWet();s.latents.resize(latentCount());s.midiControllers.resize(latentCount()+1);s.midiControllers[0]=mappings[0].load();for(size_t i=0;i<latentCount();++i){s.latents[i]=latentValues[i].load();s.midiControllers[i+1]=mappings[i+1].load();}return s;}
-bool StandaloneSessionState::restore(const Snapshot&s){if(s.latents.size()>maximumLatents||s.midiControllers.size()!=s.latents.size()+1||!finite(s.dryWet)||static_cast<std::size_t>(s.modelPath.length())>maximumStringLength||static_cast<std::size_t>(s.midiInputId.length())>maximumStringLength||static_cast<std::size_t>(s.audioDeviceType.length())>maximumStringLength||static_cast<std::size_t>(s.audioOutputId.length())>maximumStringLength||static_cast<std::size_t>(s.audioInputId.length())>maximumStringLength)return false;for(auto v:s.latents)if(!finite(v))return false;for(auto c:s.midiControllers)if(c < -1||c>127)return false;setLatentCount(s.latents.size());setDryWet(s.dryWet);for(size_t i=0;i<s.latents.size();++i)setLatent(i,s.latents[i]);{const juce::ScopedLock l(controlLock);identity=s;for(size_t i=0;i<s.midiControllers.size();++i)mappings[i].store(s.midiControllers[i]);}return true;}
-bool StandaloneSessionState::serialize(juce::MemoryBlock&o)const{auto s=snapshot();juce::XmlElement x("RaveStandaloneState");x.setAttribute("version",schemaVersion);x.setAttribute("model",s.modelPath);x.setAttribute("midiInput",s.midiInputId);x.setAttribute("deviceType",s.audioDeviceType);x.setAttribute("output",s.audioOutputId);x.setAttribute("input",s.audioInputId);x.setAttribute("dryWet",s.dryWet);x.setAttribute("count",int(s.latents.size()));for(size_t i=0;i<s.latents.size();++i){x.setAttribute("v"+juce::String(i),s.latents[i]);x.setAttribute("cc"+juce::String(i+1),s.midiControllers[i+1]);}x.setAttribute("cc0",s.midiControllers[0]);auto text=x.toString();if(text.getNumBytesAsUTF8()>maximumSerializedBytes)return false;o.replaceAll(text.toRawUTF8(),text.getNumBytesAsUTF8());return true;}
-bool StandaloneSessionState::deserialize(const void*d,size_t n){if(!d||n==0||n>maximumSerializedBytes)return false;auto x=juce::parseXML(juce::String::fromUTF8(static_cast<const char*>(d),int(n)));if(!x||!x->hasTagName("RaveStandaloneState")||x->getIntAttribute("version")!=schemaVersion)return false;Snapshot s;s.modelPath=x->getStringAttribute("model");s.midiInputId=x->getStringAttribute("midiInput");s.audioDeviceType=x->getStringAttribute("deviceType");s.audioOutputId=x->getStringAttribute("output");s.audioInputId=x->getStringAttribute("input");s.dryWet=float(x->getDoubleAttribute("dryWet"));auto c=x->getIntAttribute("count",-1);if(c<0||c>int(maximumLatents))return false;s.latents.resize(size_t(c));s.midiControllers.resize(size_t(c)+1);s.midiControllers[0]=x->getIntAttribute("cc0",-1);for(int i=0;i<c;++i){s.latents[size_t(i)]=float(x->getDoubleAttribute("v"+juce::String(i)));s.midiControllers[size_t(i)+1]=x->getIntAttribute("cc"+juce::String(i+1),-1);}return restore(s);}
+}
+
+StandaloneSessionState::StandaloneSessionState()
+{
+    for (auto& mapping : mappings)
+        mapping.store(-1, std::memory_order_relaxed);
+}
+
+void StandaloneSessionState::setLatentCount(std::size_t newCount)
+{
+    newCount = std::min(newCount, maximumLatents);
+    const juce::ScopedLock lock(controlLock);
+    const auto oldCount = count.load(std::memory_order_relaxed);
+
+    if (newCount < oldCount)
+    {
+        // Publish a shrink before resetting inactive slots. A reader that observed
+        // the old count can still safely access the fixed-capacity storage.
+        count.store(newCount, std::memory_order_release);
+        for (auto index = newCount; index < oldCount; ++index)
+        {
+            latentValues[index].store(0.0f, std::memory_order_relaxed);
+            mappings[index + 1].store(-1, std::memory_order_relaxed);
+        }
+    }
+    else if (newCount > oldCount)
+    {
+        // Initialize newly active slots before making them visible to readers.
+        for (auto index = oldCount; index < newCount; ++index)
+        {
+            latentValues[index].store(0.0f, std::memory_order_relaxed);
+            mappings[index + 1].store(-1, std::memory_order_relaxed);
+        }
+        count.store(newCount, std::memory_order_release);
+    }
+}
+
+std::size_t StandaloneSessionState::latentCount() const noexcept
+{
+    return count.load(std::memory_order_acquire);
+}
+
+float StandaloneSessionState::latent(const std::size_t index) const noexcept
+{
+    const auto currentCount = latentCount();
+    return index < currentCount
+        ? latentValues[index].load(std::memory_order_relaxed)
+        : 0.0f;
+}
+
+bool StandaloneSessionState::setLatent(const std::size_t index, const float value) noexcept
+{
+    const auto currentCount = latentCount();
+    if (index >= currentCount || !finite(value))
+        return false;
+
+    latentValues[index].store(std::clamp(value, -4.0f, 4.0f), std::memory_order_relaxed);
+    return true;
+}
+
+void StandaloneSessionState::setDryWet(const float value) noexcept
+{
+    if (finite(value))
+        mix.store(std::clamp(value, 0.0f, 1.0f), std::memory_order_relaxed);
+}
+
+float StandaloneSessionState::dryWet() const noexcept
+{
+    return mix.load(std::memory_order_relaxed);
+}
+
+void StandaloneSessionState::beginMidiLearn(const int target) noexcept
+{
+    if (target == dryWetTarget
+        || (target >= 0 && static_cast<std::size_t>(target) < latentCount()))
+        learning.store(target, std::memory_order_release);
+}
+
+void StandaloneSessionState::clearMidiMapping(const int target) noexcept
+{
+    if (target == dryWetTarget)
+    {
+        mappings[0].store(-1, std::memory_order_relaxed);
+        return;
+    }
+
+    if (target >= 0 && static_cast<std::size_t>(target) < latentCount())
+        mappings[static_cast<std::size_t>(target) + 1].store(-1, std::memory_order_relaxed);
+}
+
+int StandaloneSessionState::midiController(const int target) const noexcept
+{
+    if (target == dryWetTarget)
+        return mappings[0].load(std::memory_order_relaxed);
+
+    if (target >= 0 && static_cast<std::size_t>(target) < latentCount())
+        return mappings[static_cast<std::size_t>(target) + 1].load(std::memory_order_relaxed);
+
+    return -1;
+}
+
+bool StandaloneSessionState::applyMidiCc(const int controller, const int value) noexcept
+{
+    if (controller < 0 || controller > 127 || value < 0 || value > 127)
+        return false;
+
+    const auto currentCount = latentCount();
+    const auto learnedTarget = learning.exchange(noLearningTarget, std::memory_order_acq_rel);
+    const bool validLearnTarget = learnedTarget == dryWetTarget
+        || (learnedTarget >= 0
+            && static_cast<std::size_t>(learnedTarget) < currentCount);
+    if (validLearnTarget)
+    {
+        for (std::size_t index = 0; index <= currentCount; ++index)
+        {
+            if (mappings[index].load(std::memory_order_relaxed) == controller)
+                mappings[index].store(-1, std::memory_order_relaxed);
+        }
+
+        const auto mappingIndex = learnedTarget == dryWetTarget
+            ? std::size_t { 0 }
+            : static_cast<std::size_t>(learnedTarget) + 1;
+        mappings[mappingIndex].store(controller, std::memory_order_relaxed);
+    }
+
+    bool applied = false;
+    const auto normalized = static_cast<float>(value) / 127.0f;
+    if (mappings[0].load(std::memory_order_relaxed) == controller)
+    {
+        setDryWet(normalized);
+        applied = true;
+    }
+
+    for (std::size_t index = 0; index < currentCount; ++index)
+    {
+        if (mappings[index + 1].load(std::memory_order_relaxed) == controller)
+        {
+            latentValues[index].store(-4.0f + 8.0f * normalized, std::memory_order_relaxed);
+            applied = true;
+        }
+    }
+    return applied;
+}
+
+void StandaloneSessionState::setModelPath(juce::String value)
+{
+    const juce::ScopedLock lock(controlLock);
+    identity.modelPath = value.substring(0, static_cast<int>(maximumStringLength));
+}
+
+void StandaloneSessionState::setMidiInputId(juce::String value)
+{
+    const juce::ScopedLock lock(controlLock);
+    identity.midiInputId = value.substring(0, static_cast<int>(maximumStringLength));
+}
+
+void StandaloneSessionState::setAudioSetup(juce::String type,
+                                           juce::String output,
+                                           juce::String input)
+{
+    const juce::ScopedLock lock(controlLock);
+    identity.audioDeviceType = type.substring(0, static_cast<int>(maximumStringLength));
+    identity.audioOutputId = output.substring(0, static_cast<int>(maximumStringLength));
+    identity.audioInputId = input.substring(0, static_cast<int>(maximumStringLength));
+}
+
+StandaloneSessionState::Snapshot StandaloneSessionState::snapshot() const
+{
+    const juce::ScopedLock lock(controlLock);
+    auto result = identity;
+    const auto currentCount = latentCount();
+    result.dryWet = dryWet();
+    result.latents.resize(currentCount);
+    result.midiControllers.resize(currentCount + 1);
+    result.midiControllers[0] = mappings[0].load(std::memory_order_relaxed);
+    for (std::size_t index = 0; index < currentCount; ++index)
+    {
+        result.latents[index] = latentValues[index].load(std::memory_order_relaxed);
+        result.midiControllers[index + 1]
+            = mappings[index + 1].load(std::memory_order_relaxed);
+    }
+    return result;
+}
+
+bool StandaloneSessionState::restore(const Snapshot& value)
+{
+    if (value.latents.size() > maximumLatents
+        || value.midiControllers.size() != value.latents.size() + 1
+        || !finite(value.dryWet)
+        || static_cast<std::size_t>(value.modelPath.length()) > maximumStringLength
+        || static_cast<std::size_t>(value.midiInputId.length()) > maximumStringLength
+        || static_cast<std::size_t>(value.audioDeviceType.length()) > maximumStringLength
+        || static_cast<std::size_t>(value.audioOutputId.length()) > maximumStringLength
+        || static_cast<std::size_t>(value.audioInputId.length()) > maximumStringLength)
+        return false;
+
+    for (const auto latentValue : value.latents)
+        if (!finite(latentValue))
+            return false;
+    for (const auto controller : value.midiControllers)
+        if (controller < -1 || controller > 127)
+            return false;
+
+    setLatentCount(value.latents.size());
+    setDryWet(value.dryWet);
+    for (std::size_t index = 0; index < value.latents.size(); ++index)
+        static_cast<void>(setLatent(index, value.latents[index]));
+
+    const juce::ScopedLock lock(controlLock);
+    identity = value;
+    for (std::size_t index = 0; index < value.midiControllers.size(); ++index)
+        mappings[index].store(value.midiControllers[index], std::memory_order_relaxed);
+    return true;
+}
+
+bool StandaloneSessionState::serialize(juce::MemoryBlock& output) const
+{
+    const auto state = snapshot();
+    juce::XmlElement xml("RaveStandaloneState");
+    xml.setAttribute("version", schemaVersion);
+    xml.setAttribute("model", state.modelPath);
+    xml.setAttribute("midiInput", state.midiInputId);
+    xml.setAttribute("deviceType", state.audioDeviceType);
+    xml.setAttribute("output", state.audioOutputId);
+    xml.setAttribute("input", state.audioInputId);
+    xml.setAttribute("dryWet", state.dryWet);
+    xml.setAttribute("count", static_cast<int>(state.latents.size()));
+    xml.setAttribute("cc0", state.midiControllers[0]);
+    for (std::size_t index = 0; index < state.latents.size(); ++index)
+    {
+        xml.setAttribute("v" + juce::String(index), state.latents[index]);
+        xml.setAttribute("cc" + juce::String(index + 1), state.midiControllers[index + 1]);
+    }
+
+    const auto text = xml.toString();
+    const auto byteCount = text.getNumBytesAsUTF8();
+    if (byteCount > maximumSerializedBytes)
+        return false;
+    output.replaceAll(text.toRawUTF8(), byteCount);
+    return true;
+}
+
+bool StandaloneSessionState::deserialize(const void* data, const std::size_t bytes)
+{
+    if (data == nullptr || bytes == 0 || bytes > maximumSerializedBytes)
+        return false;
+
+    const auto xml = juce::parseXML(juce::String::fromUTF8(
+        static_cast<const char*>(data), static_cast<int>(bytes)));
+    if (xml == nullptr || !xml->hasTagName("RaveStandaloneState")
+        || xml->getIntAttribute("version") != schemaVersion)
+        return false;
+
+    Snapshot state;
+    state.modelPath = xml->getStringAttribute("model");
+    state.midiInputId = xml->getStringAttribute("midiInput");
+    state.audioDeviceType = xml->getStringAttribute("deviceType");
+    state.audioOutputId = xml->getStringAttribute("output");
+    state.audioInputId = xml->getStringAttribute("input");
+    state.dryWet = static_cast<float>(xml->getDoubleAttribute("dryWet"));
+
+    const auto parsedCount = xml->getIntAttribute("count", -1);
+    if (parsedCount < 0 || parsedCount > static_cast<int>(maximumLatents))
+        return false;
+
+    const auto parsedSize = static_cast<std::size_t>(parsedCount);
+    state.latents.resize(parsedSize);
+    state.midiControllers.resize(parsedSize + 1);
+    state.midiControllers[0] = xml->getIntAttribute("cc0", -1);
+    for (std::size_t index = 0; index < parsedSize; ++index)
+    {
+        state.latents[index] = static_cast<float>(
+            xml->getDoubleAttribute("v" + juce::String(index)));
+        state.midiControllers[index + 1] = xml->getIntAttribute(
+            "cc" + juce::String(index + 1), -1);
+    }
+    return restore(state);
+}
 }

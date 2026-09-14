@@ -1,6 +1,140 @@
 #include "state/StandaloneSessionState.h"
+
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-static void require(bool v,const char*m){if(!v){std::cerr<<"FAILED: "<<m<<'\n';std::exit(1);}}
-int main(){rave::StandaloneSessionState s;s.setLatentCount(12);for(size_t i=0;i<12;++i)require(s.setLatent(i,float(i)/4.f-1.f),"set every latent");s.setDryWet(.75f);s.setModelPath("model.ts");s.setMidiInputId("midi-1");s.setAudioSetup("CoreAudio","out-1","in-1");s.beginMidiLearn(10);require(s.applyMidiCc(74,127),"learn latent");require(std::abs(s.latent(10)-4.f)<.001f,"CC maps latent to -4..4");s.beginMidiLearn(rave::StandaloneSessionState::dryWetTarget);require(s.applyMidiCc(74,0),"reassign uniquely");require(s.midiController(10)==-1&&s.midiController(-1)==74,"unique reassignment");s.clearMidiMapping(-1);require(s.midiController(-1)==-1,"clear mapping");s.beginMidiLearn(9);s.applyMidiCc(21,64);juce::MemoryBlock b;require(s.serialize(b),"serialize");rave::StandaloneSessionState r;require(r.deserialize(b.getData(),b.getSize()),"deserialize");auto x=r.snapshot();require(x.latents.size()==12&&x.modelPath=="model.ts"&&x.midiInputId=="midi-1"&&x.audioOutputId=="out-1"&&x.audioInputId=="in-1","round trip all identity and latents");require(r.midiController(9)==21,"mapping round trip");float nan=std::numeric_limits<float>::quiet_NaN();x.latents[0]=nan;require(!r.restore(x),"reject nonfinite");std::vector<char> huge(rave::StandaloneSessionState::maximumSerializedBytes+1);require(!r.deserialize(huge.data(),huge.size()),"reject oversized");const char unsupported[]="<RaveStandaloneState version=\"2\"/>";require(!r.deserialize(unsupported,sizeof(unsupported)-1),"reject unsupported version");const char tooMany[]="<RaveStandaloneState version=\"1\" count=\"4097\"/>";require(!r.deserialize(tooMany,sizeof(tooMany)-1),"reject excessive latent count");const char malformed[]="not xml";require(!r.deserialize(malformed,sizeof(malformed)-1),"reject malformed XML");std::cout<<"Standalone session state tests passed\n";}
+#include <limits>
+#include <thread>
+#include <vector>
+
+namespace
+{
+void require(const bool condition, const char* const message)
+{
+    if (!condition)
+    {
+        std::cerr << "FAILED: " << message << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+void testRoundTripAndMidi()
+{
+    rave::StandaloneSessionState state;
+    state.setLatentCount(12);
+    for (std::size_t index = 0; index < 12; ++index)
+        require(state.setLatent(index, static_cast<float>(index) / 4.0f - 1.0f),
+                "set every latent");
+
+    state.setDryWet(0.75f);
+    state.setModelPath("model.ts");
+    state.setMidiInputId("midi-1");
+    state.setAudioSetup("CoreAudio", "out-1", "in-1");
+
+    state.beginMidiLearn(10);
+    require(state.applyMidiCc(74, 127), "learn latent");
+    require(std::abs(state.latent(10) - 4.0f) < 0.001f,
+            "CC maps latent to -4..4");
+
+    state.beginMidiLearn(rave::StandaloneSessionState::dryWetTarget);
+    require(state.applyMidiCc(74, 0), "reassign uniquely");
+    require(state.midiController(10) == -1
+                && state.midiController(rave::StandaloneSessionState::dryWetTarget) == 74,
+            "unique reassignment");
+    state.clearMidiMapping(rave::StandaloneSessionState::dryWetTarget);
+    require(state.midiController(rave::StandaloneSessionState::dryWetTarget) == -1,
+            "clear mapping");
+
+    state.beginMidiLearn(9);
+    require(state.applyMidiCc(21, 64), "learn persistent latent mapping");
+    juce::MemoryBlock data;
+    require(state.serialize(data), "serialize");
+
+    rave::StandaloneSessionState restored;
+    require(restored.deserialize(data.getData(), data.getSize()), "deserialize");
+    const auto snapshot = restored.snapshot();
+    require(snapshot.latents.size() == 12
+                && snapshot.modelPath == "model.ts"
+                && snapshot.midiInputId == "midi-1"
+                && snapshot.audioOutputId == "out-1"
+                && snapshot.audioInputId == "in-1",
+            "round trip all identity and latents");
+    require(restored.midiController(9) == 21, "mapping round trip");
+}
+
+void testMalformedInput()
+{
+    rave::StandaloneSessionState state;
+    state.setLatentCount(1);
+    auto snapshot = state.snapshot();
+    snapshot.latents[0] = std::numeric_limits<float>::quiet_NaN();
+    require(!state.restore(snapshot), "reject nonfinite");
+
+    std::vector<char> huge(rave::StandaloneSessionState::maximumSerializedBytes + 1);
+    require(!state.deserialize(huge.data(), huge.size()), "reject oversized");
+
+    constexpr char unsupported[] = "<RaveStandaloneState version=\"2\"/>";
+    require(!state.deserialize(unsupported, sizeof(unsupported) - 1),
+            "reject unsupported version");
+    constexpr char tooMany[] = "<RaveStandaloneState version=\"1\" count=\"4097\"/>";
+    require(!state.deserialize(tooMany, sizeof(tooMany) - 1),
+            "reject excessive latent count");
+    constexpr char malformed[] = "not xml";
+    require(!state.deserialize(malformed, sizeof(malformed) - 1), "reject malformed XML");
+}
+
+void testConcurrentCountAndRealtimeAccess()
+{
+    rave::StandaloneSessionState state;
+    state.setLatentCount(12);
+    state.beginMidiLearn(10);
+    require(state.applyMidiCc(74, 64), "establish stress-test MIDI mapping");
+
+    std::atomic<bool> start { false };
+    std::atomic<bool> finished { false };
+    std::atomic<bool> failed { false };
+    std::thread realtimeReader([&] {
+        while (!start.load(std::memory_order_acquire))
+            std::this_thread::yield();
+
+        while (!finished.load(std::memory_order_acquire))
+        {
+            const auto observedCount = state.latentCount();
+            for (std::size_t index = 0; index < observedCount; ++index)
+            {
+                if (!std::isfinite(state.latent(index)))
+                    failed.store(true, std::memory_order_relaxed);
+                static_cast<void>(state.midiController(static_cast<int>(index)));
+            }
+            static_cast<void>(state.applyMidiCc(74, 96));
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    for (std::size_t iteration = 0; iteration < 20000; ++iteration)
+    {
+        const auto nextCount = iteration % 2 == 0 ? std::size_t { 4 } : std::size_t { 64 };
+        state.setLatentCount(nextCount);
+        if (nextCount > 10)
+        {
+            state.beginMidiLearn(10);
+            static_cast<void>(state.applyMidiCc(74, static_cast<int>(iteration % 128)));
+        }
+    }
+    finished.store(true, std::memory_order_release);
+    realtimeReader.join();
+
+    require(!failed.load(std::memory_order_relaxed),
+            "concurrent count changes keep realtime reads finite and lifetime-safe");
+    require(state.latentCount() == 64, "stress test completes with expected count");
+}
+}
+
+int main()
+{
+    testRoundTripAndMidi();
+    testMalformedInput();
+    testConcurrentCountAndRealtimeAccess();
+    std::cout << "Standalone session state tests passed\n";
+}

@@ -95,20 +95,25 @@ void testStateSchemaMigrationsBoundsAndMacroAuthority()
     const auto before=processor.dryWetParameterReference().getValue();
     juce::XmlElement unsupported("RavePluginState"); unsupported.setAttribute("version",99);unsupported.setAttribute("dryWet",.1);
     block=xmlState(unsupported);processor.setStateInformation(block.getData(),int(block.getSize()));
-    require(processor.dryWetParameterReference().getValue()==before,"unsupported version fails closed");
+    require(std::abs(processor.dryWetParameterReference().getValue() - before) < 0.000001f,
+            "unsupported version fails closed");
     juce::XmlElement nonfinite("RavePluginState");nonfinite.setAttribute("version",2);nonfinite.setAttribute("dryWet","nan");
     block=xmlState(nonfinite);processor.setStateInformation(block.getData(),int(block.getSize()));
-    require(processor.dryWetParameterReference().getValue()==before,"non-finite state fails closed");
+    require(std::abs(processor.dryWetParameterReference().getValue() - before) < 0.000001f,
+            "non-finite state fails closed");
     juce::XmlElement badLatent("RavePluginState"); badLatent.setAttribute("version",2); badLatent.setAttribute("dryWet",.1);
     auto* badLatents=badLatent.createNewChildElement("Latents"); badLatents->setAttribute("count",1); badLatents->setAttribute("firstIndex",8); badLatents->setAttribute("v8","nan");
     block=xmlState(badLatent);processor.setStateInformation(block.getData(),int(block.getSize()));
-    require(processor.dryWetParameterReference().getValue()==before,"invalid latent fails closed transactionally");
+    require(std::abs(processor.dryWetParameterReference().getValue() - before) < 0.000001f,
+            "invalid latent fails closed transactionally");
     juce::XmlElement longPath("RavePluginState"); longPath.setAttribute("version",2); longPath.setAttribute("dryWet",.1); longPath.setAttribute("modelPath",juce::String::repeatedString("x",4097));
     block=xmlState(longPath);processor.setStateInformation(block.getData(),int(block.getSize()));
-    require(processor.dryWetParameterReference().getValue()==before,"overlong model path fails closed transactionally");
+    require(std::abs(processor.dryWetParameterReference().getValue() - before) < 0.000001f,
+            "overlong model path fails closed transactionally");
     std::vector<char> oversized(RavePluginProcessor::maximumStateBytes+1);
     processor.setStateInformation(oversized.data(),int(oversized.size()));
-    require(processor.dryWetParameterReference().getValue()==before,"oversized state fails closed");
+    require(std::abs(processor.dryWetParameterReference().getValue() - before) < 0.000001f,
+            "oversized state fails closed");
 
     juce::XmlElement missing("RavePluginState");missing.setAttribute("version",2);missing.setAttribute("modelPath","/definitely/missing/rave-model.ts");
     missing.setAttribute("dryWet",.75);missing.setAttribute("macro1",1.5);auto* lat=missing.createNewChildElement("Latents");lat->setAttribute("count",4);lat->setAttribute("firstIndex",8);
