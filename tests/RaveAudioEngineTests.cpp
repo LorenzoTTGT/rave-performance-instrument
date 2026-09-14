@@ -497,21 +497,21 @@ void testWetSuppressionUsesFiveMillisecondRamp()
     const float* rampInputs[] { ramp.data() };
     float* rampOutputs[] { rendered.data() };
     engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
-    require(std::abs(rendered.front() - (1.0f + 2.0f / fadeSamples)) < .00001f
-                && std::abs(rendered.back() - 3.0f) < .00001f,
-            "normal wet ramp reaches full wet over exactly five milliseconds");
+    engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
+    require(std::abs(rendered.back() - 3.0f) < .00001f,
+            "wet mix and result availability reach full wet before suppression");
 
     engine.setWetSuppressed(true);
     engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
-    require(rendered.front() > 1.0f && rendered.front() < 3.0f
+    require(std::abs(rendered.front() - (3.0f - 2.0f / fadeSamples)) < .00001f
                 && std::abs(rendered.back() - 1.0f) < .00001f,
-            "suppression ramps to aligned dry without a one-sample collapse");
+            "suppression uses every sample of the five millisecond ramp to aligned dry");
 
     engine.setWetSuppressed(false);
     engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
-    require(rendered.front() > 1.0f && rendered.front() < 3.0f
+    require(std::abs(rendered.front() - (1.0f + 2.0f / fadeSamples)) < .00001f
                 && std::abs(rendered.back() - 3.0f) < .00001f,
-            "unsuppression ramps back to wet without shifting the timeline");
+            "unsuppression uses every sample of the same ramp without timeline shift");
 }
 
 void testExactDeadlineAndReleaseInvalidation()
