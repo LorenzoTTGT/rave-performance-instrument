@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 3,
-    "revision": 25,
+    "revision": 27,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -180,15 +180,23 @@
             "commit": "7b3c93389cac810b805384d344ded76426d916f5",
             "evidence": "Reviewed RAVE-04 implementation and deterministic regression coverage are committed through 7b3c93389cac810b805384d344ded76426d916f5; canonical checkout was clean before the roadmap receipt export changed only the portable roadmap snapshot.",
             "recordedAt": "2026-09-14T11:28:15.517Z"
+          },
+          "pushed": {
+            "generation": 1,
+            "commit": "7b3c93389cac810b805384d344ded76426d916f5",
+            "evidence": "git push origin main succeeded from clean canonical main. The pushed history contains exact reviewed implementation commit 7b3c93389cac810b805384d344ded76426d916f5; git ls-remote verified origin/main at 27712f44126b75cf54a34435534a2c7f4f705d0a, whose sole additional commit records portable roadmap receipts.",
+            "recordedAt": "2026-09-14T11:30:48.570Z",
+            "reference": "origin/main"
           }
         },
         "ownership": {
           "owner": "pi-root",
           "branch": "main",
           "worktree": "canonical",
-          "status": "claimed",
+          "status": "released",
           "claimedAt": "2026-09-13T12:14:57.050Z",
-          "updatedAt": "2026-09-13T12:14:57.050Z"
+          "updatedAt": "2026-09-14T11:31:06.334Z",
+          "reason": "RAVE-04 completed through independent verification, committed implementation, and confirmed origin/main push."
         }
       },
       {
@@ -249,15 +257,16 @@
         "receipts": {}
       }
     ],
-    "updatedAt": "2026-09-14T11:28:15.517Z",
+    "updatedAt": "2026-09-14T11:31:06.334Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "6669eb09f8e8c84a9756346a4465a23eecbe984726f08a7d827ad1c17909684e",
     "d03d255c35990dad46ad0adceafe1692ff3547011a4c978d68e7708d29dbdfec",
     "07d745b5ac4366294cb4cb5e7129e59a90c1818b7b8557acd0e4ad2f4481f720",
     "80f5d91eb99f45c00e3a84cd1aaf361cf75083effbdad7293282d966d846477f",
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "6669eb09f8e8c84a9756346a4465a23eecbe984726f08a7d827ad1c17909684e"
+  "hash": "4ab5b287f258703a173c2e32bfd5bdbc3a3e49c64615932e531c807f007dd9e4"
 }
