@@ -28,8 +28,7 @@ class MainComponent final : public juce::Component,
                             private juce::MidiInputCallback
 {
 public:
-    MainComponent()
-        : deviceSelector(deviceManager, 0, 2, 0, 2, false, false, true, false)
+    MainComponent() : deviceSelector(deviceManager, 0, 2, 0, 2, false, false, true, false)
     {
         title.setText("RAVE Performance Instrument", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
@@ -38,7 +37,8 @@ public:
         title.setTitle("RAVE Performance Instrument");
         addAndMakeVisible(title);
 
-        status.setText(utf8("Audio pass-through ready — no model loaded"), juce::dontSendNotification);
+        status.setText(utf8("Audio pass-through ready — no model loaded"),
+                       juce::dontSendNotification);
         status.setJustificationType(juce::Justification::centred);
         status.setAccessible(true);
         status.setTitle("Model and audio status");
@@ -51,21 +51,26 @@ public:
         loadModelButton.setEnabled(false);
 #endif
 
-        configureButton(relinkButton, "Relink Missing Model…", "Choose a replacement for the missing preset model");
+        configureButton(relinkButton, "Relink Missing Model…",
+                        "Choose a replacement for the missing preset model");
         relinkButton.onClick = [this] { chooseModel(true); };
         relinkButton.setEnabled(false);
 
-        configureButton(savePresetButton, "Save Preset…", "Save a RAVE standalone .ravepreset file");
+        configureButton(savePresetButton, "Save Preset…",
+                        "Save a RAVE standalone .ravepreset file");
         savePresetButton.onClick = [this] { savePreset(); };
-        configureButton(loadPresetButton, "Load Preset…", "Load a RAVE standalone .ravepreset file");
+        configureButton(loadPresetButton, "Load Preset…",
+                        "Load a RAVE standalone .ravepreset file");
         loadPresetButton.onClick = [this] { loadPreset(); };
 
         dryWet.setRange(0.0, 1.0, 0.01);
         dryWet.setTextValueSuffix(" wet");
         dryWet.setAccessible(true);
         dryWet.setTitle("Dry wet mix");
-        dryWet.setTooltip("Amount of processed audio. MIDI learn is available beside this control.");
-        dryWet.onValueChange = [this] {
+        dryWet.setTooltip("Amount of processed audio. MIDI learn is available "
+                          "beside this control.");
+        dryWet.onValueChange = [this]
+        {
             session.setDryWet(static_cast<float>(dryWet.getValue()));
             engine.setDryWet(session.dryWet());
         };
@@ -74,9 +79,11 @@ public:
         dryWetLabel.attachToComponent(&dryWet, true);
         addAndMakeVisible(dryWetLabel);
         configureButton(dryWetLearnButton, "MIDI Learn", "Learn a MIDI CC for dry/wet");
-        dryWetLearnButton.onClick = [this] { session.beginMidiLearn(rave::StandaloneSessionState::dryWetTarget); };
+        dryWetLearnButton.onClick = [this]
+        { session.beginMidiLearn(rave::StandaloneSessionState::dryWetTarget); };
         configureButton(dryWetClearButton, "Clear", "Clear the dry/wet MIDI CC assignment");
-        dryWetClearButton.onClick = [this] { session.clearMidiMapping(rave::StandaloneSessionState::dryWetTarget); };
+        dryWetClearButton.onClick = [this]
+        { session.clearMidiMapping(rave::StandaloneSessionState::dryWetTarget); };
 
         midiInputLabel.setText("MIDI input", juce::dontSendNotification);
         midiInputLabel.setAccessible(true);
@@ -132,7 +139,8 @@ public:
         loadModelButton.setBounds(modelRow.removeFromLeft(modelRow.getWidth() / 2).reduced(2, 0));
         relinkButton.setBounds(modelRow.reduced(2, 0));
         auto presetRow = area.removeFromTop(30);
-        savePresetButton.setBounds(presetRow.removeFromLeft(presetRow.getWidth() / 2).reduced(2, 0));
+        savePresetButton.setBounds(
+            presetRow.removeFromLeft(presetRow.getWidth() / 2).reduced(2, 0));
         loadPresetButton.setBounds(presetRow.reduced(2, 0));
         area.removeFromTop(6);
 
@@ -157,7 +165,15 @@ public:
     }
 
 private:
-    void configureButton(juce::TextButton& button, const juce::String& text, const juce::String& tooltip)
+    struct ModelRequest
+    {
+        juce::File file;
+        std::uint64_t generation = 0;
+        bool relink = false;
+    };
+
+    void configureButton(juce::TextButton& button, const juce::String& text,
+                         const juce::String& tooltip)
     {
         button.setButtonText(text);
         button.setAccessible(true);
@@ -168,41 +184,55 @@ private:
 
     void rebuildLatentControls(const std::size_t dimensionCount)
     {
-        const auto clampedCount = std::min(dimensionCount, rave::StandaloneSessionState::maximumLatents);
+        const auto clampedCount =
+            std::min(dimensionCount, rave::StandaloneSessionState::maximumLatents);
         session.setLatentCount(clampedCount);
-        latentSliders.clear(); latentLabels.clear(); latentLearnButtons.clear(); latentClearButtons.clear();
-        latentSliders.reserve(clampedCount); latentLabels.reserve(clampedCount);
-        latentLearnButtons.reserve(clampedCount); latentClearButtons.reserve(clampedCount);
+        latentSliders.clear();
+        latentLabels.clear();
+        latentLearnButtons.clear();
+        latentClearButtons.clear();
+        latentSliders.reserve(clampedCount);
+        latentLabels.reserve(clampedCount);
+        latentLearnButtons.reserve(clampedCount);
+        latentClearButtons.reserve(clampedCount);
         for (std::size_t index = 0; index < clampedCount; ++index)
         {
             auto label = std::make_unique<juce::Label>();
             label->setText("Latent " + juce::String(index + 1), juce::dontSendNotification);
             label->setJustificationType(juce::Justification::centredLeft);
             latentContent.addAndMakeVisible(*label);
-            auto slider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+            auto slider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal,
+                                                         juce::Slider::TextBoxRight);
             slider->setRange(-4.0, 4.0, 0.01);
             slider->setValue(session.latent(index), juce::dontSendNotification);
             slider->setDoubleClickReturnValue(true, 0.0);
-            slider->setAccessible(true); slider->setTitle("Latent " + juce::String(index + 1));
+            slider->setAccessible(true);
+            slider->setTitle("Latent " + juce::String(index + 1));
             slider->setTooltip("Latent " + juce::String(index + 1) + " offset");
             auto* pointer = slider.get();
-            slider->onValueChange = [this, index, pointer] {
-                static_cast<void>(session.setLatent(index, static_cast<float>(pointer->getValue())));
+            slider->onValueChange = [this, index, pointer]
+            {
+                static_cast<void>(
+                    session.setLatent(index, static_cast<float>(pointer->getValue())));
                 static_cast<void>(engine.setLatentControl(index, session.latent(index)));
             };
             latentContent.addAndMakeVisible(*slider);
             auto learn = std::make_unique<juce::TextButton>();
-            learn->setAccessible(true); learn->setTitle("Learn MIDI CC for latent " + juce::String(index + 1));
+            learn->setAccessible(true);
+            learn->setTitle("Learn MIDI CC for latent " + juce::String(index + 1));
             learn->setTooltip("Learn a MIDI CC for this latent");
             learn->onClick = [this, index] { session.beginMidiLearn(static_cast<int>(index)); };
             latentContent.addAndMakeVisible(*learn);
             auto clear = std::make_unique<juce::TextButton>("Clear");
-            clear->setAccessible(true); clear->setTitle("Clear MIDI CC for latent " + juce::String(index + 1));
+            clear->setAccessible(true);
+            clear->setTitle("Clear MIDI CC for latent " + juce::String(index + 1));
             clear->setTooltip("Clear the MIDI CC assignment for this latent");
             clear->onClick = [this, index] { session.clearMidiMapping(static_cast<int>(index)); };
             latentContent.addAndMakeVisible(*clear);
-            latentLabels.push_back(std::move(label)); latentSliders.push_back(std::move(slider));
-            latentLearnButtons.push_back(std::move(learn)); latentClearButtons.push_back(std::move(clear));
+            latentLabels.push_back(std::move(label));
+            latentSliders.push_back(std::move(slider));
+            latentLearnButtons.push_back(std::move(learn));
+            latentClearButtons.push_back(std::move(clear));
         }
         layoutLatentControls();
     }
@@ -211,7 +241,9 @@ private:
     {
         constexpr int rowHeight = 42;
         const auto contentWidth = std::max(420, latentViewport.getWidth() - 14);
-        latentContent.setSize(contentWidth, std::max(latentViewport.getHeight(), static_cast<int>(latentSliders.size()) * rowHeight));
+        latentContent.setSize(contentWidth,
+                              std::max(latentViewport.getHeight(),
+                                       static_cast<int>(latentSliders.size()) * rowHeight));
         for (std::size_t index = 0; index < latentSliders.size(); ++index)
         {
             const auto y = static_cast<int>(index) * rowHeight;
@@ -224,10 +256,13 @@ private:
 
     void updateMidiLabels()
     {
-        const auto textFor = [this](const int target) {
-            // StandaloneSessionState intentionally has no widget access from the MIDI callback.
-            return session.midiController(target) >= 0 ? "CC " + juce::String(session.midiController(target))
-                 : "MIDI Learn";
+        const auto textFor = [this](const int target)
+        {
+            // StandaloneSessionState intentionally has no widget access from the MIDI
+            // callback.
+            return session.midiController(target) >= 0
+                       ? "CC " + juce::String(session.midiController(target))
+                       : "MIDI Learn";
         };
         dryWetLearnButton.setButtonText(textFor(rave::StandaloneSessionState::dryWetTarget));
         for (std::size_t index = 0; index < latentLearnButtons.size(); ++index)
@@ -254,8 +289,7 @@ private:
     void syncAudioIdentityFromManager()
     {
         const auto setup = deviceManager.getAudioDeviceSetup();
-        session.setAudioSetup(deviceManager.getCurrentAudioDeviceType(),
-                              setup.outputDeviceName,
+        session.setAudioSetup(deviceManager.getCurrentAudioDeviceType(), setup.outputDeviceName,
                               setup.inputDeviceName);
     }
 
@@ -266,8 +300,10 @@ private:
             deviceManager.setCurrentAudioDeviceType(preset.audioDeviceType, true);
         {
             auto setup = deviceManager.getAudioDeviceSetup();
-            if (preset.audioInputId.isNotEmpty()) setup.inputDeviceName = preset.audioInputId;
-            if (preset.audioOutputId.isNotEmpty()) setup.outputDeviceName = preset.audioOutputId;
+            if (preset.audioInputId.isNotEmpty())
+                setup.inputDeviceName = preset.audioInputId;
+            if (preset.audioOutputId.isNotEmpty())
+                setup.outputDeviceName = preset.audioOutputId;
             error = deviceManager.setAudioDeviceSetup(setup, true);
         }
         if (error.isNotEmpty())
@@ -283,7 +319,8 @@ private:
     {
         const auto devices = juce::MidiInput::getAvailableDevices();
         juce::StringArray ids;
-        for (const auto& device : devices) ids.add(device.identifier);
+        for (const auto& device : devices)
+            ids.add(device.identifier);
         if (ids != knownMidiIds)
         {
             knownMidiIds = ids;
@@ -297,15 +334,18 @@ private:
         const auto requested = session.snapshot().midiInputId;
         auto selected = 0;
         for (int index = 0; index < devices.size(); ++index)
-            if (devices.getReference(index).identifier == requested) selected = index + 2;
+            if (devices.getReference(index).identifier == requested)
+                selected = index + 2;
         refreshingMidiControl = true;
         midiInput.setSelectedId(selected == 0 ? 1 : selected, juce::dontSendNotification);
         refreshingMidiControl = false;
         if (requested.isNotEmpty() && selected == 0)
         {
-            // Keep the saved identifier for reconnection, while removing the stale callback.
+            // Keep the saved identifier for reconnection, while removing the stale
+            // callback.
             disableSelectedMidiInput();
-            midiStatus.setText("Selected input unavailable; waiting to reconnect", juce::dontSendNotification);
+            midiStatus.setText("Selected input unavailable; waiting to reconnect",
+                               juce::dontSendNotification);
         }
         else if (selected != 0)
         {
@@ -328,7 +368,8 @@ private:
 
     void enableMidiInput(const juce::String& identifier)
     {
-        if (activeMidiInputId == identifier) return;
+        if (activeMidiInputId == identifier)
+            return;
         disableSelectedMidiInput();
         // Exactly one available input owns this callback at a time.
         deviceManager.setMidiInputDeviceEnabled(identifier, true);
@@ -338,13 +379,16 @@ private:
 
     void selectMidiInputFromControl()
     {
-        if (refreshingMidiControl) return;
+        if (refreshingMidiControl)
+            return;
         const auto devices = juce::MidiInput::getAvailableDevices();
         const auto selected = midiInput.getSelectedId() - 2;
         if (selected < 0 || selected >= devices.size())
         {
             disableSelectedMidiInput();
-            session.setMidiInputId({}); refreshMidiInputs(); return;
+            session.setMidiInputId({});
+            refreshMidiInputs();
+            return;
         }
         const auto& device = devices.getReference(selected);
         session.setMidiInputId(device.identifier);
@@ -355,23 +399,32 @@ private:
     void handleIncomingMidiMessage(juce::MidiInput*, const juce::MidiMessage& message) override
     {
         if (message.isController())
-            static_cast<void>(session.applyMidiCc(message.getControllerNumber(), message.getControllerValue()));
+            static_cast<void>(
+                session.applyMidiCc(message.getControllerNumber(), message.getControllerValue()));
     }
 
     void savePreset()
     {
         syncAudioIdentityFromManager();
-        fileChooser = std::make_unique<juce::FileChooser>("Save RAVE preset", juce::File {}, presetWildcard);
+        fileChooser =
+            std::make_unique<juce::FileChooser>("Save RAVE preset", juce::File{}, presetWildcard);
         const auto safeThis = juce::Component::SafePointer<MainComponent>(this);
-        fileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
-            [safeThis](const juce::FileChooser& chooser) {
-                if (safeThis == nullptr) return;
+        fileChooser->launchAsync(
+            juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+            [safeThis](const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
                 auto file = chooser.getResult();
-                if (file.getFileNameWithoutExtension().isEmpty()) return;
-                if (!file.hasFileExtension(presetExtension)) file = file.withFileExtension(presetExtension);
+                if (file.getFileNameWithoutExtension().isEmpty())
+                    return;
+                if (!file.hasFileExtension(presetExtension))
+                    file = file.withFileExtension(presetExtension);
                 juce::MemoryBlock data;
-                if (safeThis->session.serialize(data) && file.replaceWithData(data.getData(), data.getSize()))
-                    safeThis->status.setText("Preset saved: " + file.getFileName(), juce::dontSendNotification);
+                if (safeThis->session.serialize(data) &&
+                    file.replaceWithData(data.getData(), data.getSize()))
+                    safeThis->status.setText("Preset saved: " + file.getFileName(),
+                                             juce::dontSendNotification);
                 else
                     safeThis->status.setText("Could not save preset", juce::dontSendNotification);
             });
@@ -379,18 +432,23 @@ private:
 
     void loadPreset()
     {
-        fileChooser = std::make_unique<juce::FileChooser>("Load RAVE preset", juce::File {}, presetWildcard);
+        fileChooser =
+            std::make_unique<juce::FileChooser>("Load RAVE preset", juce::File{}, presetWildcard);
         const auto safeThis = juce::Component::SafePointer<MainComponent>(this);
-        fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [safeThis](const juce::FileChooser& chooser) {
-                if (safeThis == nullptr) return;
+        fileChooser->launchAsync(
+            juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [safeThis](const juce::FileChooser& chooser)
+            {
+                if (safeThis == nullptr)
+                    return;
                 const auto file = chooser.getResult();
                 juce::MemoryBlock data;
                 rave::StandaloneSessionState parsed;
-                if (!file.existsAsFile() || !file.loadFileAsData(data)
-                    || !parsed.deserialize(data.getData(), data.getSize()))
+                if (!file.existsAsFile() || !file.loadFileAsData(data) ||
+                    !parsed.deserialize(data.getData(), data.getSize()))
                 {
-                    safeThis->status.setText("Preset load failed: invalid .ravepreset", juce::dontSendNotification);
+                    safeThis->status.setText("Preset load failed: invalid .ravepreset",
+                                             juce::dontSendNotification);
                     return;
                 }
                 safeThis->applyPreset(parsed.snapshot());
@@ -399,11 +457,14 @@ private:
 
     void applyPreset(const rave::StandaloneSessionState::Snapshot& preset)
     {
-        // A preset supersedes any in-flight model request even when it names no model
-        // or a missing one; no older background result may activate afterward.
+        // A preset supersedes any in-flight model request even when it names no
+        // model or a missing one; no older background result may activate
+        // afterward.
         static_cast<void>(requestGate.begin());
-        // Validation happened in a temporary state above, so this message-thread application is fail-closed.
-        if (!session.restore(preset)) return;
+        // Validation happened in a temporary state above, so this message-thread
+        // application is fail-closed.
+        if (!session.restore(preset))
+            return;
         applyAudioSetup(preset);
         rebuildLatentControls(preset.latents.size());
         refreshMidiInputs();
@@ -413,8 +474,11 @@ private:
             for (int index = 0; index < devices.size(); ++index)
                 if (devices.getReference(index).identifier == preset.midiInputId)
                 {
-                    refreshingMidiControl = true; midiInput.setSelectedId(index + 2, juce::sendNotification); refreshingMidiControl = false;
-                    selectMidiInputFromControl(); break;
+                    refreshingMidiControl = true;
+                    midiInput.setSelectedId(index + 2, juce::sendNotification);
+                    refreshingMidiControl = false;
+                    selectMidiInputFromControl();
+                    break;
                 }
         }
         syncControlsAndEngine();
@@ -423,8 +487,11 @@ private:
             requestModel(juce::File(preset.modelPath), false);
         else if (preset.modelPath.isNotEmpty())
         {
-            relinkRequired = true; relinkButton.setEnabled(true);
-            status.setText("Preset model is missing; relink required: " + juce::File(preset.modelPath).getFileName(), juce::dontSendNotification);
+            relinkRequired = true;
+            relinkButton.setEnabled(true);
+            status.setText("Preset model is missing; relink required: " +
+                               juce::File(preset.modelPath).getFileName(),
+                           juce::dontSendNotification);
         }
         else
             status.setText("Preset loaded — no model selected", juce::dontSendNotification);
@@ -436,73 +503,131 @@ private:
 #if RAVE_HAS_LIBTORCH
     void chooseModel(const bool relink)
     {
-        fileChooser = std::make_unique<juce::FileChooser>(relink ? "Relink missing TorchScript model" : "Choose a TorchScript model", juce::File {}, "*.ts;*.pt;*.pth");
+        fileChooser = std::make_unique<juce::FileChooser>(
+            relink ? "Relink missing TorchScript model" : "Choose a TorchScript model",
+            juce::File{}, "*.ts;*.pt;*.pth");
         const auto safeThis = juce::Component::SafePointer<MainComponent>(this);
-        fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [safeThis, relink](const juce::FileChooser& chooser) {
-                if (safeThis == nullptr) return;
-                const auto file = chooser.getResult();
-                if (file.existsAsFile()) safeThis->requestModel(file, relink);
-            });
+        fileChooser->launchAsync(juce::FileBrowserComponent::openMode |
+                                     juce::FileBrowserComponent::canSelectFiles,
+                                 [safeThis, relink](const juce::FileChooser& chooser)
+                                 {
+                                     if (safeThis == nullptr)
+                                         return;
+                                     const auto file = chooser.getResult();
+                                     if (file.existsAsFile())
+                                         safeThis->requestModel(file, relink);
+                                 });
     }
 
     void requestModel(const juce::File& file, const bool relink)
     {
-        const auto generation = requestGate.begin();
-        const auto config = engine.runtimeConfiguration();
-        if (config.sampleRate <= 0.0 || config.maximumBlockSize == 0)
+        startModelRequest(ModelRequest{file, requestGate.begin(), relink});
+    }
+
+    void startModelRequest(const ModelRequest& request)
+    {
+        if (!requestGate.isCurrent(request.generation))
+            return;
+
+        const auto configuration = engine.runtimeConfiguration();
+        if (configuration.sampleRate <= 0.0 || configuration.maximumBlockSize == 0)
         {
-            status.setText("Audio device not ready — model request deferred", juce::dontSendNotification); return;
+            deferredRequest.replace(request, request.generation);
+            status.setText("Audio device not ready — model request deferred",
+                           juce::dontSendNotification);
+            return;
         }
+
         if (modelLoader->state() == rave::BackgroundModelLoader::State::loading)
         {
-            queuedRequest = ModelRequest { file, generation, relink };
-            status.setText("Queued latest model request: " + file.getFileName(), juce::dontSendNotification); return;
+            queuedRequest.replace(request, request.generation);
+            status.setText("Queued latest model request: " + request.file.getFileName(),
+                           juce::dontSendNotification);
+            return;
         }
-        if (!modelLoader->start(file.getFullPathName().toStdString(), config))
+
+        if (!modelLoader->start(request.file.getFullPathName().toStdString(), configuration))
         {
-            status.setText("Could not start model load", juce::dontSendNotification); return;
+            status.setText("Could not start model load", juce::dontSendNotification);
+            return;
         }
-        pendingRequest = ModelRequest { file, generation, relink };
+
+        pendingRequest = request;
         loadModelButton.setEnabled(false);
-        status.setText("Loading " + file.getFileName() + utf8("…"), juce::dontSendNotification);
+        status.setText("Loading " + request.file.getFileName() + utf8("…"),
+                       juce::dontSendNotification);
     }
 
     void startQueuedRequestIfAny()
     {
-        if (!queuedRequest.has_value()) return;
-        const auto next = *queuedRequest; queuedRequest.reset();
-        if (!requestGate.isCurrent(next.generation)) return;
-        requestModel(next.file, next.relink);
+        if (const auto request = queuedRequest.takeCurrent(requestGate); request.has_value())
+            startModelRequest(*request);
+    }
+
+    void startDeferredRequestIfReady()
+    {
+        const auto configuration = engine.runtimeConfiguration();
+        if (configuration.sampleRate <= 0.0 || configuration.maximumBlockSize == 0 ||
+            modelLoader->state() == rave::BackgroundModelLoader::State::loading)
+            return;
+
+        if (const auto request = deferredRequest.takeCurrent(requestGate); request.has_value())
+            startModelRequest(*request);
     }
 
     void pollModelLoader()
     {
         const auto loaderState = modelLoader->state();
-        if (loaderState != rave::BackgroundModelLoader::State::succeeded && loaderState != rave::BackgroundModelLoader::State::failed) return;
+        if (loaderState != rave::BackgroundModelLoader::State::succeeded &&
+            loaderState != rave::BackgroundModelLoader::State::failed)
+            return;
         const auto result = modelLoader->takeResult();
         loadModelButton.setEnabled(true);
-        const auto request = pendingRequest; pendingRequest.reset();
-        if (!request.has_value() || !requestGate.isCurrent(request->generation)) { startQueuedRequestIfAny(); return; }
+        const auto request = pendingRequest;
+        pendingRequest.reset();
+        if (!request.has_value() || !requestGate.isCurrent(request->generation))
+        {
+            startQueuedRequestIfAny();
+            return;
+        }
         if (result.state == rave::BackgroundModelLoader::State::failed)
         {
-            status.setText("Model load failed: " + juce::String(result.errorMessage), juce::dontSendNotification);
-            startQueuedRequestIfAny(); return;
+            status.setText("Model load failed: " + juce::String(result.errorMessage),
+                           juce::dontSendNotification);
+            startQueuedRequestIfAny();
+            return;
         }
         deviceManager.removeAudioCallback(&engine);
-        std::string failure; bool activated = false;
-        try { activated = engine.activateModelBackend(std::move(result.backend), &failure); }
-        catch (const std::exception& exception) { failure = exception.what(); }
-        catch (...) { failure = "unknown activation error"; }
+        std::string failure;
+        bool activated = false;
+        try
+        {
+            activated = engine.activateModelBackend(std::move(result.backend), &failure);
+        }
+        catch (const std::exception& exception)
+        {
+            failure = exception.what();
+        }
+        catch (...)
+        {
+            failure = "unknown activation error";
+        }
         deviceManager.addAudioCallback(&engine);
-        if (!requestGate.isCurrent(request->generation)) { startQueuedRequestIfAny(); return; }
+        if (!requestGate.isCurrent(request->generation))
+        {
+            startQueuedRequestIfAny();
+            return;
+        }
         if (!activated)
         {
-            status.setText("Model activation failed: " + juce::String(failure), juce::dontSendNotification);
-            startQueuedRequestIfAny(); return;
+            status.setText("Model activation failed: " + juce::String(failure),
+                           juce::dontSendNotification);
+            startQueuedRequestIfAny();
+            return;
         }
         session.setModelPath(request->file.getFullPathName());
-        relinkRequired = false; relinkButton.setEnabled(false);
+        relinkRequired = false;
+        relinkButton.setEnabled(false);
         rebuildLatentControls(engine.latentDimensionCount());
         syncControlsAndEngine();
         refreshLifecycleStatus();
@@ -515,9 +640,14 @@ private:
     void refreshLifecycleStatus()
     {
         const auto snapshot = engine.lifecycleStatusSnapshot();
-        if (snapshot.revision == lastLifecycleRevision) return;
+        if (snapshot.revision == lastLifecycleRevision)
+            return;
         lastLifecycleRevision = snapshot.revision;
-        status.setText(rave::lifecycleStatusText(snapshot.diagnostic, snapshot.modelUsable, snapshot.modelInstalled, {}, snapshot.latentDimensionCount, utf8("Audio pass-through ready — no model loaded")), juce::dontSendNotification);
+        status.setText(
+            rave::lifecycleStatusText(snapshot.diagnostic, snapshot.modelUsable,
+                                      snapshot.modelInstalled, {}, snapshot.latentDimensionCount,
+                                      utf8("Audio pass-through ready — no model loaded")),
+            juce::dontSendNotification);
     }
 
     void timerCallback() override
@@ -528,19 +658,20 @@ private:
         refreshLifecycleStatus();
 #if RAVE_HAS_LIBTORCH
         pollModelLoader();
+        startDeferredRequestIfReady();
 #endif
     }
 
-    struct ModelRequest { juce::File file; std::uint64_t generation = 0; bool relink = false; };
     juce::AudioDeviceManager deviceManager;
     rave::RaveAudioEngine engine;
     rave::StandaloneSessionState session;
     rave::LatestRequestGeneration requestGate;
     juce::AudioDeviceSelectorComponent deviceSelector;
     juce::Label title, status, dryWetLabel, midiInputLabel, midiStatus;
-    juce::TextButton loadModelButton, relinkButton, savePresetButton, loadPresetButton, dryWetLearnButton, dryWetClearButton;
+    juce::TextButton loadModelButton, relinkButton, savePresetButton, loadPresetButton,
+        dryWetLearnButton, dryWetClearButton;
     juce::ComboBox midiInput;
-    juce::Slider dryWet { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    juce::Slider dryWet{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     juce::Component latentContent;
     juce::Viewport latentViewport;
     std::vector<std::unique_ptr<juce::Label>> latentLabels;
@@ -553,32 +684,53 @@ private:
     std::uint64_t lastLifecycleRevision = 0;
 #if RAVE_HAS_LIBTORCH
     bool relinkRequired = false;
-    std::unique_ptr<rave::BackgroundModelLoader> modelLoader = std::make_unique<rave::BackgroundModelLoader>([] { return std::make_shared<rave::TorchScriptBackend>(); });
+    std::unique_ptr<rave::BackgroundModelLoader> modelLoader =
+        std::make_unique<rave::BackgroundModelLoader>(
+            [] { return std::make_shared<rave::TorchScriptBackend>(); });
     std::optional<ModelRequest> pendingRequest;
-    std::optional<ModelRequest> queuedRequest;
+    rave::LatestRequestSlot<ModelRequest> deferredRequest;
+    rave::LatestRequestSlot<ModelRequest> queuedRequest;
 #endif
 };
 
 class MainWindow final : public juce::DocumentWindow
 {
 public:
-    explicit MainWindow(const juce::String& name) : DocumentWindow(name, juce::Desktop::getInstance().getDefaultLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId), DocumentWindow::allButtons)
+    explicit MainWindow(const juce::String& name)
+        : DocumentWindow(name,
+                         juce::Desktop::getInstance().getDefaultLookAndFeel().findColour(
+                             juce::ResizableWindow::backgroundColourId),
+                         DocumentWindow::allButtons)
     {
-        setUsingNativeTitleBar(true); setContentOwned(new MainComponent(), true); setResizable(true, true);
-        setResizeLimits(480, 420, 1600, 1200); centreWithSize(getWidth(), getHeight()); setVisible(true);
+        setUsingNativeTitleBar(true);
+        setContentOwned(new MainComponent(), true);
+        setResizable(true, true);
+        setResizeLimits(480, 420, 1600, 1200);
+        centreWithSize(getWidth(), getHeight());
+        setVisible(true);
     }
-    void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+    void closeButtonPressed() override
+    {
+        juce::JUCEApplication::getInstance()->systemRequestedQuit();
+    }
 };
 
 class RaveApplication final : public juce::JUCEApplication
 {
 public:
-    [[nodiscard]] const juce::String getApplicationName() override { return "RAVE Performance Instrument"; }
+    [[nodiscard]] const juce::String getApplicationName() override
+    {
+        return "RAVE Performance Instrument";
+    }
     [[nodiscard]] const juce::String getApplicationVersion() override { return "0.1.0"; }
-    void initialise(const juce::String&) override { window = std::make_unique<MainWindow>(getApplicationName()); }
+    void initialise(const juce::String&) override
+    {
+        window = std::make_unique<MainWindow>(getApplicationName());
+    }
     void shutdown() override { window.reset(); }
+
 private:
     std::unique_ptr<MainWindow> window;
 };
-}
+} // namespace
 START_JUCE_APPLICATION(RaveApplication)

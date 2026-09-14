@@ -67,10 +67,23 @@ void testRoundTripAndMidi()
 void testLatestRequestGeneration()
 {
     rave::LatestRequestGeneration requests;
+    rave::LatestRequestSlot<int> deferred;
+
     const auto first = requests.begin();
+    deferred.replace(1, first);
     const auto second = requests.begin();
+    deferred.replace(2, second);
+
     require(!requests.isCurrent(first) && requests.isCurrent(second),
             "newest model/preset/relink request wins deterministically");
+    const auto newest = deferred.takeCurrent(requests);
+    require(newest.has_value() && *newest == 2 && !deferred.hasValue(),
+            "newest deferred request is retained and starts exactly once");
+
+    deferred.replace(3, second);
+    static_cast<void>(requests.begin());
+    require(!deferred.takeCurrent(requests).has_value(),
+            "a stale deferred request never starts");
 }
 
 void testMalformedInput()
