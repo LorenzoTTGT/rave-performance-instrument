@@ -660,6 +660,117 @@ public:
     int failCount = 2;
 };
 
+#if RAVE_HAS_LIBTORCH
+class RelinkTwelveLatentBackend final : public rave::ModelBackend
+{
+public:
+    explicit RelinkTwelveLatentBackend(std::shared_ptr<std::atomic<bool>> reject)
+        : rejectLoad(std::move(reject)) {}
+    bool load(const std::string&, std::string& error) override
+    {
+        if (!rejectLoad->load(std::memory_order_acquire)) return true;
+        error = "injected qualification refusal";
+        return false;
+    }
+    void prepare(double, std::size_t) override {}
+    bool reset(std::string&) override { return true; }
+    std::size_t latentDimensionCount() const noexcept override { return 12; }
+    bool process(const std::span<const float> input, const std::span<const float>,
+                 const std::span<float> output) override
+    {
+        for (std::size_t i = 0; i < input.size(); ++i) output[i] = input[i] * 3.0f;
+        return true;
+    }
+private:
+    std::shared_ptr<std::atomic<bool>> rejectLoad;
+};
+
+void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
+{
+    auto reject = std::make_shared<std::atomic<bool>>(false);
+    RavePluginProcessor processor([reject] { return std::make_shared<RelinkTwelveLatentBackend>(reject); });
+    processor.prepareToPlay(48000.0, 2048);
+    require(loadModel(processor, modelFile), "injected twelve-latent model activates");
+    processor.dryWetParameterReference().setValueNotifyingHost(1.0f);
+
+    juce::XmlElement missing("RavePluginState");
+    missing.setAttribute("version", 2); missing.setAttribute("modelPath", "/missing/relink-model.ts");
+    missing.setAttribute("dryWet", 1.0);
+    for (int i = 0; i < 8; ++i) missing.setAttribute("macro" + juce::String(i + 1), -0.8 + i * 0.2);
+    auto* latents = missing.createNewChildElement("Latents");
+    latents->setAttribute("count", 4); latents->setAttribute("firstIndex", 8);
+    for (int i = 8; i < 12; ++i) latents->setAttribute("v" + juce::String(i), -0.8 + i * 0.2);
+    auto state = xmlState(missing);
+    processor.setStateInformation(state.getData(), int(state.getSize()));
+    require(processor.isRelinkRequired() && processor.requestedModelPath().contains("relink-model.ts"),
+            "missing restore retains relink identity");
+    require(std::abs(processor.dryWetParameterReference().convertFrom0to1(
+                processor.dryWetParameterReference().getValue()) - 1.0f) < .001f,
+            "missing restore preserves host dry/wet");
+    juce::MemoryBlock retained; processor.getStateInformation(retained);
+    auto parsed = juce::AudioProcessor::getXmlFromBinary(retained.getData(), int(retained.getSize()));
+    require(parsed && parsed->getChildByName("Latents")->getIntAttribute("count") == 4,
+            "all twelve values retain eight authoritative macros plus four dynamic latents");
+    for (int i = 0; i < 8; ++i)
+        require(std::abs(float(parsed->getDoubleAttribute("macro" + juce::String(i + 1)))
+                             - (-0.8f + float(i) * 0.2f)) < .011f,
+                "retained macro value serializes by index");
+    for (int i = 8; i < 12; ++i)
+        require(std::abs(float(parsed->getChildByName("Latents")->getDoubleAttribute(
+                                 "v" + juce::String(i)))
+                             - (-0.8f + float(i) * 0.2f)) < .011f,
+                "retained dynamic latent serializes by index");
+    juce::AudioBuffer<float> audio(2, 2048); juce::MidiBuffer midi;
+    for (int block = 0; block < 3; ++block)
+    {
+        audio.clear();
+        for (int channel = 0; channel < 2; ++channel)
+            for (int sample = 0; sample < audio.getNumSamples(); ++sample) audio.setSample(channel, sample, 1.0f);
+        processor.processBlock(audio, midi);
+        requireFiniteOutput(audio);
+    }
+    require(std::abs(audio.getSample(0, 2047) - 1.0f) < .00001f,
+            "missing restore suppresses wet to exactly aligned dry");
+
+    reject->store(true, std::memory_order_release);
+    require(processor.relinkMissingModel(modelFile), "failed relink request starts");
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(), "failed relink settles");
+    require(processor.isRelinkRequired() && processor.modelStatus().containsIgnoreCase("failed"),
+            "failed relink remains required with truthful status");
+    juce::MemoryBlock failed; processor.getStateInformation(failed);
+    parsed = juce::AudioProcessor::getXmlFromBinary(failed.getData(), int(failed.getSize()));
+    require(parsed && parsed->getChildByName("Latents")->getIntAttribute("count") == 4,
+            "failed relink retains dynamic latent payload");
+    for (int channel = 0; channel < 2; ++channel)
+        for (int sample = 0; sample < audio.getNumSamples(); ++sample) audio.setSample(channel, sample, 1.0f);
+    processor.processBlock(audio, midi);
+    require(std::abs(audio.getSample(0, 2047) - 1.0f) < .00001f,
+            "failed relink remains suppressed to aligned dry");
+
+    reject->store(false, std::memory_order_release);
+    require(processor.relinkMissingModel(modelFile), "successful relink request starts");
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(), "successful relink settles");
+    require(!processor.isRelinkRequired() && processor.latentDimensionCount() == 12,
+            "successful relink clears requirement and restores dimension count");
+    for (std::size_t i = 0; i < 12; ++i)
+        require(std::abs(processor.latentControl(i) - (-0.8f + float(i) * 0.2f)) < .011f,
+                "successful relink restores every retained latent by index");
+    bool wetObserved = false;
+    for (int block = 0; block < 32 && !wetObserved; ++block)
+    {
+        audio.clear();
+        for (int channel = 0; channel < 2; ++channel)
+            for (int sample = 0; sample < audio.getNumSamples(); ++sample) audio.setSample(channel, sample, 1.0f);
+        processor.processBlock(audio, midi);
+        requireFiniteOutput(audio);
+        wetObserved = audio.getSample(0, 2047) > 1.1f;
+        std::this_thread::yield();
+    }
+    require(wetObserved, "successful relink removes suppression and wet output recovers");
+    processor.releaseResources();
+}
+#endif
+
 void testRollbackFailureClearsLatentsAndSerializedModelPath(const juce::File& modelFile)
 {
     auto counter = std::make_shared<std::atomic<int>>(0);
@@ -739,6 +850,9 @@ int main(const int argc, const char* const* argv)
         testReleaseReportsInstalledNotRunning(juce::File(argv[1]));
         testPrepareThrowAtReprepareReportsStatus(juce::File(argv[1]));
         testRollbackFailureClearsLatentsAndSerializedModelPath(juce::File(argv[1]));
+#if RAVE_HAS_LIBTORCH
+        testMissingRelinkSuppressionAndTwelveLatents(juce::File(argv[1]));
+#endif
         testEditorClosureDuringLoad(juce::File(argv[1]));
         testRepeatedReplacementRemainsBounded(juce::File(argv[1]), junkFile);
         junkFile.deleteFile();
