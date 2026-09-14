@@ -1,4 +1,5 @@
 #include "plugin/PluginEditor.h"
+#include <RaveIconAssets.h>
 
 #include "plugin/PluginProcessor.h"
 
@@ -17,9 +18,20 @@ namespace
 RavePluginEditor::RavePluginEditor(RavePluginProcessor& owner)
     : AudioProcessorEditor(owner), ownerProcessor(owner)
 {
+    icon = juce::Drawable::createFromImageData(RaveIconAssets::raveinstrumenticon_svg,
+                                               RaveIconAssets::raveinstrumenticon_svgSize);
+    if (icon != nullptr)
+    {
+        icon->setAccessible(true);
+        icon->setTitle("RAVE Performance Instrument original icon");
+        addAndMakeVisible(*icon);
+    }
+
     title.setText("RAVE Performance Instrument", juce::dontSendNotification);
     title.setJustificationType(juce::Justification::centred);
     title.setFont(juce::Font(20.0f, juce::Font::bold));
+    title.setAccessible(true);
+    title.setTitle("RAVE Performance Instrument");
     addAndMakeVisible(title);
 
     status.setText(ownerProcessor.modelStatus(), juce::dontSendNotification);
@@ -71,7 +83,10 @@ RavePluginEditor::~RavePluginEditor()
 void RavePluginEditor::resized()
 {
     auto area = getLocalBounds().reduced(24);
-    title.setBounds(area.removeFromTop(40));
+    auto titleArea = area.removeFromTop(40);
+    if (icon != nullptr)
+        icon->setBounds(titleArea.removeFromLeft(40).reduced(2));
+    title.setBounds(titleArea);
     status.setBounds(area.removeFromTop(32));
     area.removeFromTop(16);
     loadModelButton.setBounds(area.removeFromTop(38).reduced(80, 0));

@@ -10,19 +10,18 @@ Generate/prior operation, elaborate modulation, effects, expanded routing, multi
 
 The repository currently contains a shared JUCE audio engine, standalone application, VST3/AU effect targets, background TorchScript loading with off-thread candidate qualification, transactional model activation and rollback, RAVE metadata probing, fixed 2048-sample asynchronous inference framing on a 4096-sample host-reported transport, aligned dry/wet mixing with deadline fallback and recovery fades, bounded runtime telemetry, latent controls, eight stable plugin macros, plugin MIDI learn, and plugin state recall.
 
-Verified locally on the current working tree:
+Latest local qualification evidence:
 
-- LibTorch build and CTest: 9/9 passing.
-- LibTorch-disabled build and CTest: 7/7 passing.
-- VST3 and AU bundles build and pass strict ad-hoc signature verification.
-- A generated RAVE-like TorchScript fixture verifies plugin model-path and latent recall.
+- Current RAVE-06 LibTorch-disabled build and CTest: 8/8 passing, including deterministic icon assets.
+- The preceding RAVE-04 LibTorch qualification passed 9/9, including plugin model-path and latent recall with the hash-gated real fixture; the post-icon LibTorch matrix remains a RAVE-05 check.
+- Current VST3 and AU bundles build, contain the generated icon resources, and pass strict ad-hoc signature verification.
 
 Deterministic tests qualify lifecycle behavior, exact transport timing, variable callback partitions, deadline commitment, fallback/recovery fades, queue saturation, stale-result rejection, telemetry epochs, and the SHA-256-verified local RAVE fixture. DAW hosts, long-duration performance, and perceptual/intrinsic model latency remain unqualified.
 
 ## Known priority gaps
 
-1. Official icon sourcing, packaging, and visual verification remain deferred to RAVE-06.
-2. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work. Hardware, DAW, soak, and visual observation are not claimed by the deterministic RAVE-04 checks.
+1. Original project-owned icon generation and packaging are complete in RAVE-06; official RAVE/IRCAM artwork is intentionally out of scope.
+2. Real DAW compatibility, soak reliability, intrinsic model latency, target-machine performance, and final human icon observation remain RAVE-05 qualification work. Hardware, DAW, soak, and visual observation are not claimed by deterministic source checks.
 
 ## Phases
 
@@ -104,15 +103,15 @@ ctest --test-dir build -R 'rave_plugin(_model_recall)?_tests' --output-on-failur
 
 Add shared-state/standalone tests for restore-before-prepare, reprepare, missing files, superseded loads, unsupported versions, and larger latent vectors.
 
-### RAVE-06 — Official RAVE icon integration
+### RAVE-06 — Original project-owned instrument icon
 
-- [ ] Source the official RAVE icon from an authoritative project asset and record its provenance and permitted use.
-- [ ] Generate the required platform and HiDPI sizes from the official artwork without distortion or unintended modification.
-- [ ] Display the icon consistently in the plugin interface and standalone application.
-- [ ] Include the icon in standalone and plugin bundle resources and metadata where the target format supports it.
-- [ ] Verify the icon at representative scales and in built standalone, VST3, and AU artifacts.
+- [x] Create and record provenance for a restrained original geometric icon; do not copy, embed, or imply endorsement by RAVE, IRCAM, or a third party.
+- [x] Keep one canonical SVG source and deterministically generate square transparent 16–1024 px derivatives, including representative small/HiDPI and large/HiDPI sizes, without distortion.
+- [x] Display the same embedded SVG identity in the standalone and plugin editors with an accessible icon title while retaining the existing control layouts.
+- [x] Use JUCE's `ICON_BIG`/`ICON_SMALL` CMake facilities for standalone, VST3, and AU metadata; package JUCE-generated `Icon.icns` and the inspectable canonical SVG where macOS bundles support resources.
+- [x] Document project authorship, MIT artwork license, source, deterministic generation, hashes, and the user-authorized substitution for the rejected official mark.
 
-**Focused checks:** build the standalone, VST3, and AU targets; inspect packaged resources and verify the icon in both application interfaces.
+**Focused checks:** run `python3 assets/icon/generate_icon.py --check`; configure a fresh no-LibTorch JUCE build, build standalone/VST3/AU, run CTest, inspect dimensions/alpha/hashes and each bundle's `Icon.icns`, `rave-instrument-icon.svg`, and `Info.plist`, then run strict VST3/AU codesign verification. Human visual confirmation at intended host/system scale remains deferred to RAVE-05.
 
 ### RAVE-05 — Real-model and host qualification
 

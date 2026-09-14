@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RAVE Performance Instrument original icon, generation 2.
+  Copyright (c) 2026 RAVE Performance Instrument contributors. MIT License.
+  This is an original abstract latent portal: a rounded graphite field, a
+  turquoise portal ring, and an asymmetric amber control point. It is not a
+  RAVE, IRCAM, or third-party logo.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">RAVE Performance Instrument</title>
+  <desc id="desc">An original abstract audio latent portal icon.</desc>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="#24262b"/>
+  <circle cx="64" cy="64" r="31" fill="none" stroke="#66d9d0" stroke-width="11"/>
+  <path d="M64 33v14M64 81v14M33 64h14M81 64h14" fill="none" stroke="#66d9d0" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="83" cy="45" r="8" fill="#f4ae65"/>
+</svg>

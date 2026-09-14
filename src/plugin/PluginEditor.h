@@ -27,6 +27,7 @@ private:
     void timerCallback() override;
 
     RavePluginProcessor& ownerProcessor;
+    std::unique_ptr<juce::Drawable> icon;
     juce::Label title;
     juce::Label status;
     juce::TextButton loadModelButton;

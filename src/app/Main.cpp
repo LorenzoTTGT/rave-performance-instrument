@@ -1,4 +1,5 @@
 #include <JuceHeader.h>
+#include <RaveIconAssets.h>
 
 #include "engine/LifecycleStatusText.h"
 #include "engine/RaveAudioEngine.h"
@@ -31,6 +32,15 @@ class MainComponent final : public juce::Component,
 public:
     MainComponent() : deviceSelector(deviceManager, 0, 2, 0, 2, false, false, true, false)
     {
+        icon = juce::Drawable::createFromImageData(RaveIconAssets::raveinstrumenticon_svg,
+                                                   RaveIconAssets::raveinstrumenticon_svgSize);
+        if (icon != nullptr)
+        {
+            icon->setAccessible(true);
+            icon->setTitle("RAVE Performance Instrument original icon");
+            addAndMakeVisible(*icon);
+        }
+
         title.setText("RAVE Performance Instrument", juce::dontSendNotification);
         title.setJustificationType(juce::Justification::centred);
         title.setFont(juce::Font(24.0f, juce::Font::bold));
@@ -132,7 +142,10 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced(18);
-        title.setBounds(area.removeFromTop(34));
+        auto titleArea = area.removeFromTop(34);
+        if (icon != nullptr)
+            icon->setBounds(titleArea.removeFromLeft(34).reduced(2));
+        title.setBounds(titleArea);
         status.setBounds(area.removeFromTop(28));
         area.removeFromTop(6);
 
@@ -758,6 +771,7 @@ private:
     rave::StandalonePresetModelCoordinator presetModelCoordinator { session };
     rave::LatestRequestGeneration requestGate;
     juce::AudioDeviceSelectorComponent deviceSelector;
+    std::unique_ptr<juce::Drawable> icon;
     juce::Label title, status, dryWetLabel, midiInputLabel, midiStatus;
     juce::TextButton loadModelButton, relinkButton, savePresetButton, loadPresetButton,
         dryWetLearnButton, dryWetClearButton;

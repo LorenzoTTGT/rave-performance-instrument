@@ -6,7 +6,7 @@ Build a native RAVE performance instrument in C++ with JUCE, using LibTorch init
 
 The instrument should let a performer load a model, route audio through it, explore its latent space, assign modulation and MIDI, and save the complete setup.
 
-RAVE-04 adds bounded standalone `.ravepreset` sessions (model path, all latents, dry/wet, MIDI mapping/input, and audio identities), visible standalone audio/MIDI selection, MIDI learn/clear for every latent, and missing-model relinking. Real-device and DAW observation remain RAVE-05 work.
+RAVE-04 adds bounded standalone `.ravepreset` sessions (model path, all latents, dry/wet, MIDI mapping/input, and audio identities), visible standalone audio/MIDI selection, MIDI learn/clear for every latent, and missing-model relinking. RAVE-06 adds a project-owned original latent-portal icon to both editors and supported macOS bundle metadata/resources; it intentionally does not use the official RAVE/IRCAM mark. Real-device and DAW observation remain RAVE-05 work.
 
 ### Fixed realtime transport
 
@@ -163,6 +163,17 @@ build produces:
 Debug plugin bundles are ad-hoc signed after JUCE generates VST3 metadata so
 local hosts can validate the complete bundle. Distribution signing and
 notarization remain release steps.
+
+### Icon assets
+
+The original project-owned icon's canonical SVG, MIT artwork license,
+provenance, deterministic PNG generation, and bundle-inspection procedure are
+in [`docs/ICON_ASSETS.md`](docs/ICON_ASSETS.md). Verify checked-in derivatives
+without desktop automation with:
+
+```sh
+python3 assets/icon/generate_icon.py --check
+```
 
 ## First milestone
 

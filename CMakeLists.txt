@@ -72,8 +72,24 @@ target_compile_definitions(rave_engine
         JUCE_WEB_BROWSER=0
 )
 
+set(RAVE_ICON_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon/rave-instrument-icon.svg")
+set(RAVE_ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon/rave-instrument-icon-32.png")
+set(RAVE_ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon/rave-instrument-icon-1024.png")
+
+# The SVG is the canonical project-owned artwork used by both editor targets.
+# JUCE's inspected ICON_BIG/ICON_SMALL facilities below create platform icons.
+juce_add_binary_data(rave_icon_resources
+    NAMESPACE RaveIconAssets
+    HEADER_NAME RaveIconAssets.h
+    SOURCES "${RAVE_ICON_SOURCE}"
+)
+
 include(CTest)
 if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME rave_icon_assets_tests
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/IconAssetTests.py")
     add_executable(rave_engine_tests tests/AudioBlockQueueTests.cpp)
     target_link_libraries(rave_engine_tests PRIVATE rave_engine)
     add_test(NAME rave_engine_tests COMMAND rave_engine_tests)
@@ -119,7 +135,10 @@ endif()
 juce_add_gui_app(rave_instrument
     PRODUCT_NAME "RAVE Performance Instrument"
     COMPANY_NAME "RAVE Performance Instrument"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 RAVE Performance Instrument contributors"
     BUNDLE_ID "org.raveperformance.instrument"
+    ICON_BIG "${RAVE_ICON_BIG}"
+    ICON_SMALL "${RAVE_ICON_SMALL}"
 )
 
 juce_generate_juce_header(rave_instrument)
@@ -129,6 +148,7 @@ target_sources(rave_instrument PRIVATE src/app/Main.cpp)
 target_link_libraries(rave_instrument
     PRIVATE
         rave_engine
+        rave_icon_resources
         juce::juce_audio_utils
         juce::juce_gui_extra
     PUBLIC
@@ -143,6 +163,9 @@ juce_add_plugin(rave_plugin
     PLUGIN_CODE RvPI
     BUNDLE_ID "org.raveperformance.instrument.plugin"
     PRODUCT_NAME "RAVE Performance Instrument"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 RAVE Performance Instrument contributors"
+    ICON_BIG "${RAVE_ICON_BIG}"
+    ICON_SMALL "${RAVE_ICON_SMALL}"
     FORMATS VST3 AU
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT TRUE
@@ -172,6 +195,7 @@ target_compile_definitions(rave_plugin
 target_link_libraries(rave_plugin
     PRIVATE
         rave_engine
+        rave_icon_resources
         juce::juce_audio_processors
         juce::juce_gui_extra
     PUBLIC
@@ -181,6 +205,19 @@ target_link_libraries(rave_plugin
 )
 
 if(APPLE)
+    # JUCE puts the generated Icon.icns in each supported bundle and its
+    # generated Info.plist. Preserve the canonical SVG as a inspectable bundle
+    # resource as well, without adding a runtime file dependency to the UI.
+    set_source_files_properties("${RAVE_ICON_SOURCE}"
+        PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    target_sources(rave_instrument PRIVATE "${RAVE_ICON_SOURCE}")
+    if(TARGET rave_plugin_VST3)
+        target_sources(rave_plugin_VST3 PRIVATE "${RAVE_ICON_SOURCE}")
+    endif()
+    if(TARGET rave_plugin_AU)
+        target_sources(rave_plugin_AU PRIVATE "${RAVE_ICON_SOURCE}")
+    endif()
+
     add_custom_command(TARGET rave_plugin_VST3 POST_BUILD
         COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:rave_plugin_VST3>"
         VERBATIM

@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 3,
-    "revision": 29,
+    "revision": 31,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -227,20 +227,20 @@
           "remote": "origin",
           "branch": "main"
         },
-        "generation": 2,
+        "generation": 3,
         "work": "todo",
         "receipts": {},
         "reset": {
-          "reason": "Require official RAVE icon integration to be verified before final application and plugin qualification.",
-          "source": "rave-05-qualification",
-          "recordedAt": "2026-09-12T20:00:18.630Z"
+          "reason": "User explicitly chose a different icon and does not require the official RAVE mark; replace the blocked trademark-dependent requirement with original project-owned artwork.",
+          "source": "rave-06-official-icon",
+          "recordedAt": "2026-09-14T11:37:08.569Z"
         }
       },
       {
         "id": "rave-06-official-icon",
-        "title": "Official RAVE icon integration",
+        "title": "Original instrument icon integration",
         "acceptance": [
-          "Record the authoritative source and permitted use of the official RAVE icon",
+          "Create an original project-owned icon distinct from official RAVE/IRCAM marks and record its provenance and license",
           "Generate platform and HiDPI assets without distortion or unintended artwork changes",
           "Display the icon consistently in the plugin interface and standalone application",
           "Include icon resources and metadata in standalone, VST3 and AU artifacts where supported",
@@ -252,8 +252,8 @@
           "remote": "origin",
           "branch": "main"
         },
-        "generation": 1,
-        "work": "todo",
+        "generation": 2,
+        "work": "doing",
         "receipts": {},
         "ownership": {
           "owner": "pi-root",
@@ -263,13 +263,18 @@
           "claimedAt": "2026-09-14T11:35:25.109Z",
           "updatedAt": "2026-09-14T11:35:25.109Z"
         },
-        "workBlock": "Why: The only authoritative RAVE artwork found is acids-ircam/RAVE docs/rave.png (1800x392 wordmark). The repository license is CC BY-NC 4.0, which permits noncommercial reuse with attribution but explicitly does not license trademark rights or implied endorsement. This project has no recorded distribution model or written IRCAM/ACIDS permission, so using the mark as the standalone/plugin product icon cannot yet satisfy the roadmap's permitted-use criterion.\nNext: The project owner must either (a) confirm this instrument will remain noncommercial and authorize CC BY-NC attribution-based use while accepting the trademark/endorsement limitation, or (b) provide written IRCAM/ACIDS permission for the intended distribution. Evidence needed: the selected distribution/use decision and, for commercial or official-brand use, a permission reference; then pi-root can integrate the pinned official asset and verify bundles/scales."
+        "reset": {
+          "reason": "User explicitly chose a different icon and does not require the official RAVE mark; replace the blocked trademark-dependent requirement with original project-owned artwork.",
+          "source": "rave-06-official-icon",
+          "recordedAt": "2026-09-14T11:37:08.569Z"
+        }
       }
     ],
-    "updatedAt": "2026-09-14T11:35:34.282Z",
+    "updatedAt": "2026-09-14T11:37:12.988Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "1f7cd5cbc89839e414a2920204ec0472f7cafaa83ee1100a9b77d7fb1a8e63fd",
     "4ab5b287f258703a173c2e32bfd5bdbc3a3e49c64615932e531c807f007dd9e4",
     "6669eb09f8e8c84a9756346a4465a23eecbe984726f08a7d827ad1c17909684e",
     "d03d255c35990dad46ad0adceafe1692ff3547011a4c978d68e7708d29dbdfec",
@@ -278,5 +283,5 @@
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "1f7cd5cbc89839e414a2920204ec0472f7cafaa83ee1100a9b77d7fb1a8e63fd"
+  "hash": "c603b4ed8fce9d47c6a85e2afcc273404bfa861764c63acc5b65b52a866f8b03"
 }
