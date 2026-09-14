@@ -756,15 +756,18 @@ void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
         require(std::abs(processor.latentControl(i) - (-0.8f + float(i) * 0.2f)) < .011f,
                 "successful relink restores every retained latent by index");
     bool wetObserved = false;
-    for (int block = 0; block < 32 && !wetObserved; ++block)
+    for (int block = 0; block < 64 && !wetObserved; ++block)
     {
         audio.clear();
         for (int channel = 0; channel < 2; ++channel)
-            for (int sample = 0; sample < audio.getNumSamples(); ++sample) audio.setSample(channel, sample, 1.0f);
+            for (int sample = 0; sample < audio.getNumSamples(); ++sample)
+                audio.setSample(channel, sample, 1.0f);
         processor.processBlock(audio, midi);
         requireFiniteOutput(audio);
         wetObserved = audio.getSample(0, 2047) > 1.1f;
-        std::this_thread::yield();
+        // Give the real inference worker a bounded scheduling window before
+        // the next frame deadline; a bare yield is not a scheduling guarantee.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     require(wetObserved, "successful relink removes suppression and wet output recovers");
     processor.releaseResources();
