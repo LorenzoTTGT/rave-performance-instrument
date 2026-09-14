@@ -30,6 +30,8 @@ add_library(rave_engine STATIC
     src/engine/LifecycleStatusText.h
     src/engine/RaveAudioEngine.cpp
     src/engine/RaveAudioEngine.h
+    src/app/StandalonePresetModelCoordinator.cpp
+    src/app/StandalonePresetModelCoordinator.h
     src/model/BackgroundModelLoader.cpp
     src/model/BackgroundModelLoader.h
     src/model/ModelBackend.h
@@ -87,6 +89,13 @@ if(BUILD_TESTING)
     add_executable(rave_standalone_state_tests tests/StandaloneSessionStateTests.cpp)
     target_link_libraries(rave_standalone_state_tests PRIVATE rave_engine juce::juce_core)
     add_test(NAME rave_standalone_state_tests COMMAND rave_standalone_state_tests)
+
+    add_executable(rave_standalone_preset_coordinator_tests
+        tests/StandalonePresetModelCoordinatorTests.cpp)
+    target_link_libraries(rave_standalone_preset_coordinator_tests
+        PRIVATE rave_engine juce::juce_core)
+    add_test(NAME rave_standalone_preset_coordinator_tests
+        COMMAND rave_standalone_preset_coordinator_tests)
 
     add_executable(rave_model_loader_tests tests/BackgroundModelLoaderTests.cpp)
     target_link_libraries(rave_model_loader_tests PRIVATE rave_engine)

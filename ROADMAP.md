@@ -21,11 +21,10 @@ Deterministic tests qualify lifecycle behavior, exact transport timing, variable
 
 ## Known priority gaps
 
-1. A saved model path that is already missing is silently skipped during state restore instead of producing the documented visible failure.
-2. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
-3. Standalone still lacks device selection, MIDI learn, and versioned preset save/load.
-4. State parsing needs stronger bounds and migration tests (RAVE-04); backend output validation now rejects malformed metadata, unexpected shapes, non-finite output, and backend exceptions at qualification and runtime.
-5. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work.
+1. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
+2. Macro authority over latent dimensions 1–8 still needs one unambiguous serialized source.
+3. Plugin-state migration from the initial float-only format needs broader migration coverage.
+4. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work. Hardware, DAW, soak, and visual observation are not claimed by the deterministic RAVE-04 checks.
 
 ## Phases
 
@@ -92,12 +91,12 @@ Depends on: RAVE-02 verified. Final audio acceptance also depends on RAVE-03.
 - [x] Preserve standalone session latent values across device callback reprepare, controls, and model activation; plugin lifecycle coverage remains in the existing engine tests.
 - [x] Surface missing standalone/plugin model paths as relink-required and reject stale standalone loader results with a monotonic request generation.
 - [ ] Define macro authority over latent dimensions 1–8 and remove duplicate/ambiguous serialized sources.
-- [ ] Bound serialized latent counts and validate state versions; retain tested migration from the initial float-only plugin state.
+- [x] Bound standalone serialized latent counts and validate standalone state versions; plugin migration from the initial float-only state remains a known gap.
 - [x] Add explicit model relinking when a saved same-machine path is unavailable.
 - [x] Add standalone MIDI input identity and one-selected-input callback wiring, plus learn, clear/reassign behavior for dry/wet and every scrolling latent row.
 - [x] Add bounded versioned standalone `.ravepreset` Save/Load state for model identity, every latent value, dry/wet, MIDI assignments/input, and audio setup.
 - [x] Add visible standalone AudioDeviceSelectorComponent input/output configuration and message-thread device application.
-- [x] Test standalone state recall with 12 latents, MIDI/device identities, and deterministic latest-request gating; real-device and DAW observation remain RAVE-05.
+- [x] Test standalone state recall with 12 latents, MIDI/device identities, deterministic latest-request gating, and preset-owned control retention through pending/missing/relink activation; real-device and DAW observation remain RAVE-05.
 
 **Focused checks:**
 

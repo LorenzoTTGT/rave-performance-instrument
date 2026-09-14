@@ -2,6 +2,7 @@
 
 #include "engine/LifecycleStatusText.h"
 #include "engine/RaveAudioEngine.h"
+#include "app/StandalonePresetModelCoordinator.h"
 #include "state/LatestRequestGeneration.h"
 #include "state/StandaloneSessionState.h"
 
@@ -170,6 +171,10 @@ private:
         juce::File file;
         std::uint64_t generation = 0;
         bool relink = false;
+        // Preset and relink replacements deliberately mute a previous model
+        // until the requested identity activates. Ordinary candidate loads keep
+        // the previous-working-model behavior.
+        bool replacement = false;
     };
 
     void configureButton(juce::TextButton& button, const juce::String& text,
@@ -275,7 +280,11 @@ private:
         dryWet.setValue(state.dryWet, juce::dontSendNotification);
         engine.setDryWet(state.dryWet);
         const auto engineCount = engine.latentDimensionCount();
-        if (engineCount != latentSliders.size())
+        // A restored preset owns its shape until its named model either activates
+        // or is explicitly cleared. In particular, do not let a fresh/old engine
+        // with zero dimensions destroy restored latent values and MIDI mappings.
+        if (!presetModelCoordinator.presetControlsAreAuthoritative()
+            && engineCount != latentSliders.size())
             rebuildLatentControls(engineCount);
         const auto count = std::min(state.latents.size(), latentSliders.size());
         for (std::size_t index = 0; index < count; ++index)
@@ -460,11 +469,13 @@ private:
         // A preset supersedes any in-flight model request even when it names no
         // model or a missing one; no older background result may activate
         // afterward.
-        static_cast<void>(requestGate.begin());
+        const auto generation = requestGate.begin();
         // Validation happened in a temporary state above, so this message-thread
-        // application is fail-closed.
-        if (!session.restore(preset))
+        // application is fail-closed. The coordinator is also the timer's
+        // authority boundary for the restored control shape.
+        if (!presetModelCoordinator.applyPreset(preset, generation))
             return;
+        engine.setWetSuppressed(true);
         applyAudioSetup(preset);
         rebuildLatentControls(preset.latents.size());
         refreshMidiInputs();
@@ -484,19 +495,28 @@ private:
         syncControlsAndEngine();
 #if RAVE_HAS_LIBTORCH
         if (preset.modelPath.isNotEmpty() && juce::File(preset.modelPath).existsAsFile())
-            requestModel(juce::File(preset.modelPath), false);
+            requestModel(juce::File(preset.modelPath), false, true, generation);
         else if (preset.modelPath.isNotEmpty())
         {
-            relinkRequired = true;
-            relinkButton.setEnabled(true);
+            presetModelCoordinator.markPresetModelMissing(generation);
+            relinkRequired = presetModelCoordinator.relinkRequired();
+            relinkButton.setEnabled(relinkRequired);
             status.setText("Preset model is missing; relink required: " +
                                juce::File(preset.modelPath).getFileName(),
                            juce::dontSendNotification);
         }
         else
-            status.setText("Preset loaded — no model selected", juce::dontSendNotification);
+        {
+            relinkRequired = false;
+            relinkButton.setEnabled(false);
+            status.setText("Preset loaded — no model selected (aligned dry)",
+                           juce::dontSendNotification);
+        }
 #else
-        status.setText("Preset loaded; LibTorch backend unavailable", juce::dontSendNotification);
+        status.setText(preset.modelPath.isEmpty()
+                           ? "Preset loaded — no model selected (aligned dry)"
+                           : "Preset loaded; LibTorch backend unavailable",
+                       juce::dontSendNotification);
 #endif
     }
 
@@ -519,9 +539,21 @@ private:
                                  });
     }
 
-    void requestModel(const juce::File& file, const bool relink)
+    void requestModel(const juce::File& file,
+                      const bool relink,
+                      const bool replacement = false,
+                      const std::optional<std::uint64_t> generation = std::nullopt)
     {
-        startModelRequest(ModelRequest{file, requestGate.begin(), relink});
+        const auto requestGeneration = generation.value_or(requestGate.begin());
+        const auto replacesPresetIdentity = replacement || relink;
+        if (replacesPresetIdentity)
+        {
+            presetModelCoordinator.beginReplacementRequest(requestGeneration);
+            engine.setWetSuppressed(true);
+        }
+        else
+            presetModelCoordinator.beginOrdinaryRequest(requestGeneration);
+        startModelRequest(ModelRequest{file, requestGeneration, relink, replacesPresetIdentity});
     }
 
     void startModelRequest(const ModelRequest& request)
@@ -548,6 +580,12 @@ private:
 
         if (!modelLoader->start(request.file.getFullPathName().toStdString(), configuration))
         {
+            if (request.replacement)
+            {
+                presetModelCoordinator.markReplacementFailed(request.generation);
+                relinkRequired = presetModelCoordinator.relinkRequired();
+                relinkButton.setEnabled(relinkRequired);
+            }
             status.setText("Could not start model load", juce::dontSendNotification);
             return;
         }
@@ -592,6 +630,12 @@ private:
         }
         if (result.state == rave::BackgroundModelLoader::State::failed)
         {
+            if (request->replacement)
+            {
+                presetModelCoordinator.markReplacementFailed(request->generation);
+                relinkRequired = presetModelCoordinator.relinkRequired();
+                relinkButton.setEnabled(relinkRequired);
+            }
             status.setText("Model load failed: " + juce::String(result.errorMessage),
                            juce::dontSendNotification);
             startQueuedRequestIfAny();
@@ -620,16 +664,33 @@ private:
         }
         if (!activated)
         {
+            if (request->replacement)
+            {
+                presetModelCoordinator.markReplacementFailed(request->generation);
+                relinkRequired = presetModelCoordinator.relinkRequired();
+                relinkButton.setEnabled(relinkRequired);
+            }
             status.setText("Model activation failed: " + juce::String(failure),
                            juce::dontSendNotification);
             startQueuedRequestIfAny();
             return;
         }
+        // Reconcile the preset's retained shape before normal engine authority
+        // resumes. Matching latent values and MIDI mappings survive by index.
+        if (!presetModelCoordinator.reconcileActivatedModel(request->generation,
+                                                             engine.latentDimensionCount()))
+        {
+            startQueuedRequestIfAny();
+            return;
+        }
         session.setModelPath(request->file.getFullPathName());
-        relinkRequired = false;
-        relinkButton.setEnabled(false);
         rebuildLatentControls(engine.latentDimensionCount());
         syncControlsAndEngine();
+        if (request->replacement)
+            engine.setWetSuppressed(false);
+        static_cast<void>(presetModelCoordinator.completeActivation(request->generation));
+        relinkRequired = false;
+        relinkButton.setEnabled(false);
         refreshLifecycleStatus();
         startQueuedRequestIfAny();
     }
@@ -665,6 +726,7 @@ private:
     juce::AudioDeviceManager deviceManager;
     rave::RaveAudioEngine engine;
     rave::StandaloneSessionState session;
+    rave::StandalonePresetModelCoordinator presetModelCoordinator { session };
     rave::LatestRequestGeneration requestGate;
     juce::AudioDeviceSelectorComponent deviceSelector;
     juce::Label title, status, dryWetLabel, midiInputLabel, midiStatus;
