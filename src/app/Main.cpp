@@ -633,8 +633,17 @@ private:
                 relinkRequired = presetModelCoordinator.relinkRequired();
                 relinkButton.setEnabled(relinkRequired);
             }
-            status.setText("Model load failed: " + juce::String(result.errorMessage),
-                           juce::dontSendNotification);
+            const auto lifecycleSnapshot = engine.lifecycleStatusSnapshot();
+            status.setText(
+                rave::standaloneModelLoadFailureStatus(result.errorMessage,
+                                                       request->replacement,
+                                                       relinkRequired,
+                                                       lifecycleSnapshot),
+                juce::dontSendNotification);
+            // Keep the concrete qualification/load event until a genuinely
+            // newer lifecycle outcome exists. Coordinator authority separately
+            // protects replacement/relink status while wet remains suppressed.
+            lifecycleStatusGate.markObserved(lifecycleSnapshot.revision);
             startQueuedRequestIfAny();
             return;
         }

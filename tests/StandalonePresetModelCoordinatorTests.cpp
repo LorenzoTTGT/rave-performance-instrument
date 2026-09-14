@@ -161,6 +161,49 @@ void testOrdinaryLoadClassifiesSuppressedPresetStates()
             "ordinary active-model candidate keeps RAVE-02 failure behavior");
 }
 
+void testStandaloneLoaderFailureStatusOutcomes()
+{
+    const rave::RaveAudioEngine::LifecycleStatusSnapshot usable {
+        20, true, true, {}, 12
+    };
+    auto text = rave::standaloneModelLoadFailureStatus(
+        "qualification rejected fixture", false, false, usable);
+    require(text.contains("qualification rejected fixture")
+                && text.containsIgnoreCase("previous model remains usable")
+                && text.contains("12 latent dimensions"),
+            "ordinary candidate failure reports concrete error and usable previous model");
+
+    const rave::RaveAudioEngine::LifecycleStatusSnapshot unavailable {
+        21, false, false, {}, 0
+    };
+    text = rave::standaloneModelLoadFailureStatus(
+        "malformed model", false, false, unavailable);
+    require(text.contains("malformed model")
+                && text.containsIgnoreCase("bounded dry pass-through")
+                && !text.containsIgnoreCase("active"),
+            "ordinary failure without usable model reports truthful dry outcome");
+
+    rave::StandaloneSessionState state;
+    rave::StandalonePresetModelCoordinator coordinator(state);
+    require(coordinator.applyPreset(twelveLatentPreset("/missing/model.ts"), 30),
+            "replacement preset applies");
+    require(coordinator.beginModelRequest(30, true), "replacement request classified");
+    coordinator.markReplacementFailed(30);
+    text = rave::standaloneModelLoadFailureStatus(
+        "decode failed", true, coordinator.relinkRequired(), usable);
+    require(text.contains("decode failed") && text.containsIgnoreCase("aligned dry")
+                && text.containsIgnoreCase("relink required")
+                && !text.containsIgnoreCase("active"),
+            "replacement failure ignores old active engine and reports suppression/relink");
+
+    rave::LifecycleStatusRevisionGate gate;
+    gate.markObserved(usable.revision);
+    require(!gate.shouldPublish(usable.revision),
+            "immediate lifecycle refresh preserves ordinary failure event");
+    require(gate.shouldPublish(usable.revision + 1),
+            "genuinely newer lifecycle event may supersede ordinary failure");
+}
+
 void testCoordinatorOwnedStatusSurvivesDeviceLifecycle()
 {
     rave::StandaloneSessionState state;
@@ -231,6 +274,7 @@ int main()
     testFreshMissingPresetRetainsControlsUntilRelinkActivation();
     testActivationReconcilesByIndex();
     testOrdinaryLoadClassifiesSuppressedPresetStates();
+    testStandaloneLoaderFailureStatusOutcomes();
     testCoordinatorOwnedStatusSurvivesDeviceLifecycle();
     testActivationFailureStatusRevisionInterleaving();
     testEmptyAndStalePresetTransitions();

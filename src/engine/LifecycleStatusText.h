@@ -136,4 +136,33 @@ private:
         ? current
         : eventContext + juce::String(juce::CharPointer_UTF8(" — current state: ")) + current;
 }
+
+[[nodiscard]] inline juce::String standaloneModelLoadFailureStatus(
+    const std::string& errorMessage,
+    const bool authoritativeReplacement,
+    const bool relinkRequired,
+    const RaveAudioEngine::LifecycleStatusSnapshot& snapshot)
+{
+    auto event = juce::String("Model load failed: ")
+        + juce::String(juce::CharPointer_UTF8(errorMessage.c_str()));
+    if (authoritativeReplacement)
+    {
+        event += juce::String(juce::CharPointer_UTF8(
+            " — replacement remains suppressed to aligned dry"));
+        if (relinkRequired)
+            event += "; relink required";
+        return event;
+    }
+
+    if (snapshot.modelUsable)
+        return event + juce::String(juce::CharPointer_UTF8(
+                           " — current state: previous model remains usable — "))
+            + juce::String(static_cast<int>(snapshot.latentDimensionCount))
+            + " latent dimensions";
+
+    return contextualLifecycleStatus(
+        event, snapshot, {},
+        juce::String(juce::CharPointer_UTF8(
+            "No usable model — bounded dry pass-through")));
+}
 } // namespace rave
