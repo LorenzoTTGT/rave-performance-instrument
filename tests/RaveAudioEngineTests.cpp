@@ -477,6 +477,43 @@ void testDeterministicResultValidationAndFade()
     require(engine.runtimeTelemetry().lateResults == 1, "first late result counted precisely");
 }
 
+void testWetSuppressionUsesFiveMillisecondRamp()
+{
+    constexpr int fadeSamples = 240;
+    rave::RaveAudioEngine engine;
+    engine.prepare(48000.0, 2048, 1);
+
+    std::vector<float> input(2048, 1.0f), output(2048);
+    const float* inputs[] { input.data() };
+    float* outputs[] { output.data() };
+    engine.processAudio(inputs, 1, outputs, 1, 2048);
+    std::vector<float> wet(2048, 3.0f);
+    require(engine.publishResultForTesting(wet.data(), wet.size(), 0),
+            "suppression test result committed before playback");
+    engine.processAudio(inputs, 1, outputs, 1, 2048);
+
+    engine.setDryWet(1.0f);
+    std::vector<float> ramp(fadeSamples, 1.0f), rendered(fadeSamples);
+    const float* rampInputs[] { ramp.data() };
+    float* rampOutputs[] { rendered.data() };
+    engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
+    require(std::abs(rendered.front() - (1.0f + 2.0f / fadeSamples)) < .00001f
+                && std::abs(rendered.back() - 3.0f) < .00001f,
+            "normal wet ramp reaches full wet over exactly five milliseconds");
+
+    engine.setWetSuppressed(true);
+    engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
+    require(rendered.front() > 1.0f && rendered.front() < 3.0f
+                && std::abs(rendered.back() - 1.0f) < .00001f,
+            "suppression ramps to aligned dry without a one-sample collapse");
+
+    engine.setWetSuppressed(false);
+    engine.processAudio(rampInputs, 1, rampOutputs, 1, fadeSamples);
+    require(rendered.front() > 1.0f && rendered.front() < 3.0f
+                && std::abs(rendered.back() - 3.0f) < .00001f,
+            "unsuppression ramps back to wet without shifting the timeline");
+}
+
 void testExactDeadlineAndReleaseInvalidation()
 {
     constexpr std::size_t deadline = 4096 - 240;
@@ -1553,6 +1590,7 @@ int main()
     testDryFallbackWithoutModel();
     testProcessedAudioUsesMatchingDelayedDryBlock();
     testDeterministicResultValidationAndFade();
+    testWetSuppressionUsesFiveMillisecondRamp();
     testExactDeadlineAndReleaseInvalidation();
     testPrepareValidationAndTelemetryEpochReset();
     testControlledWorkerDeadlineIntegration();

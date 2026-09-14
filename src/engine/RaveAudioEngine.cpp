@@ -629,9 +629,7 @@ void RaveAudioEngine::processAudio(
 
         const auto suppressWet = wetSuppressed.load(std::memory_order_acquire);
         const auto targetMix = suppressWet ? 0.0f : dryWet();
-        if (suppressWet)
-            smoothedDryWet = 0.0f;
-        else if (smoothedDryWet < targetMix)
+        if (smoothedDryWet < targetMix)
             smoothedDryWet = std::min(targetMix, smoothedDryWet + smoothingStep);
         else
             smoothedDryWet = std::max(targetMix, smoothedDryWet - smoothingStep);

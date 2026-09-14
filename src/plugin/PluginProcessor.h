@@ -112,8 +112,10 @@ private:
     juce::File queuedRestoreModelFile;
     std::vector<float> queuedRestoreLatents;
     std::vector<float> pendingLatentRestore;
+#if RAVE_HAS_LIBTORCH
     std::uint64_t pendingGeneration = 0;
     std::uint64_t queuedGeneration = 0;
+#endif
     std::atomic<std::uint64_t> requestGeneration { 0 };
     juce::File requestedMissingModelFile;
     std::vector<float> retainedMissingLatents;
