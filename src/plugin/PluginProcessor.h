@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine/RaveAudioEngine.h"
+#include "model/ModelQualification.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -24,7 +25,7 @@ public:
     static constexpr std::size_t midiTargetCount = macroCount + 1;
     static constexpr int stateSchemaVersion = 2;
     static constexpr std::size_t maximumStateBytes = 1024 * 1024;
-    static constexpr std::size_t maximumLatentCount = 4096;
+    static constexpr std::size_t maximumLatentCount = rave::maximumLatentDimensions;
 
     // The optional factory injects a test backend; production uses the
     // TorchScript backend factory.
@@ -72,6 +73,10 @@ public:
     [[nodiscard]] float latentControl(std::size_t index) const noexcept;
     [[nodiscard]] bool setLatentControl(std::size_t index, float value) noexcept;
 
+    // Message-thread handoff for MIDI changes captured by processBlock().
+    // Coalesces each parameter to its newest callback value.
+    void publishPendingMidiParameterChanges();
+
     // Surfaces engine lifecycle transitions (incompatible reprepare, failing
     // checked reset/start, release/device stop) in the visible status instead
     // of leaving an active claim while dry fallback is used. Renders through
@@ -99,6 +104,7 @@ private:
     std::array<juce::AudioParameterFloat*, macroCount> macroParameters {};
     std::array<std::atomic<int>, midiTargetCount> midiControllers;
     std::atomic<int> learningMidiTarget { -1 };
+    std::atomic<std::uint16_t> pendingMidiParameterMask { 0 };
 #if RAVE_HAS_LIBTORCH
     std::unique_ptr<rave::BackgroundModelLoader> modelLoader;
 #endif

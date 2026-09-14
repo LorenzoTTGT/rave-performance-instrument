@@ -209,7 +209,9 @@ void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData
 
     auto* const latents = state.createNewChildElement("Latents");
     const bool useSavedLatents = !savedRelinkLatents.empty();
-    const auto latentCount = useSavedLatents ? savedRelinkLatents.size() : engine.latentDimensionCount();
+    const auto latentCount = std::min(
+        useSavedLatents ? savedRelinkLatents.size() : engine.latentDimensionCount(),
+        maximumLatentCount);
     const auto dynamicCount = latentCount > macroCount ? latentCount - macroCount : 0;
     latents->setAttribute("count", static_cast<int>(dynamicCount));
     latents->setAttribute("firstIndex", static_cast<int>(macroCount));
@@ -524,6 +526,7 @@ bool RavePluginProcessor::setLatentControl(const std::size_t index, const float 
 
 void RavePluginProcessor::timerCallback()
 {
+    publishPendingMidiParameterChanges();
     refreshLifecycleStatus();
     static_cast<void>(finishModelLoadIfReady());
 
@@ -612,8 +615,29 @@ void RavePluginProcessor::applyMidi(juce::MidiBuffer& midiMessages) noexcept
 
             auto* const parameter = target == 0 ? dryWetParameter : macroParameters[target - 1];
             if (parameter != nullptr)
-                parameter->setValueNotifyingHost(normalizedValue);
+            {
+                // AudioParameterFloat::setValue is an atomic value update. Do
+                // not notify listeners/host from the callback: JUCE's notify
+                // path acquires its listener lock.
+                static_cast<juce::AudioProcessorParameter*>(parameter)->setValue(normalizedValue);
+                pendingMidiParameterMask.fetch_or(
+                    static_cast<std::uint16_t>(1u << target), std::memory_order_release);
+            }
         }
+    }
+}
+
+void RavePluginProcessor::publishPendingMidiParameterChanges()
+{
+    const auto pending = pendingMidiParameterMask.exchange(0, std::memory_order_acq_rel);
+    for (std::size_t target = 0; target < midiTargetCount; ++target)
+    {
+        if ((pending & static_cast<std::uint16_t>(1u << target)) == 0)
+            continue;
+        auto* const parameter = target == 0 ? dryWetParameter : macroParameters[target - 1];
+        if (parameter != nullptr)
+            parameter->setValueNotifyingHost(
+                static_cast<juce::AudioProcessorParameter*>(parameter)->getValue());
     }
 }
 

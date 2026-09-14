@@ -3,12 +3,36 @@
 #include "engine/RaveAudioEngine.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include <juce_core/juce_core.h>
 
 namespace rave
 {
+class LifecycleStatusRevisionGate
+{
+public:
+    [[nodiscard]] bool shouldPublish(const std::uint64_t revision) noexcept
+    {
+        if (revision <= observedRevision)
+            return false;
+        observedRevision = revision;
+        return true;
+    }
+
+    // Preserve an explicit event rendered from this coherent lifecycle
+    // revision. Only a later lifecycle change may supersede it.
+    void markObserved(const std::uint64_t revision) noexcept
+    {
+        if (revision > observedRevision)
+            observedRevision = revision;
+    }
+
+private:
+    std::uint64_t observedRevision = 0;
+};
+
 // Activation failure strings may carry an engine-appended rollback outcome.
 // Remove only recognized suffixes: backend diagnostics are otherwise opaque
 // and may legitimately begin with or contain semicolons.

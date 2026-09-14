@@ -1,4 +1,5 @@
 #include "model/BackgroundModelLoader.h"
+#include "model/ModelQualification.h"
 
 #include <atomic>
 #include <chrono>
@@ -103,7 +104,7 @@ public:
         return true;
     }
 
-    [[nodiscard]] std::size_t latentDimensionCount() const noexcept override { return 0; }
+    [[nodiscard]] std::size_t latentDimensionCount() const noexcept override { return latentCount; }
     [[nodiscard]] int modelSampleRate() const noexcept override { return declaredSampleRate; }
 
     // Mirrors the real backend contract: a declared sample rate must match the
@@ -151,6 +152,7 @@ public:
     std::shared_ptr<BackendLog> log;
     int declaredSampleRate = -1;
     ProcessBehavior behavior = ProcessBehavior::succeed;
+    std::size_t latentCount = 0;
     ResetBehavior resetBehavior = ResetBehavior::succeed;
     bool throwOnPrepare = false;
     int orderCounter = 0;
@@ -409,6 +411,27 @@ void testRepeatedReplacementCyclesRemainBounded()
     require(loader.state() == rave::BackgroundModelLoader::State::idle,
             "loader idle after repeated replacement");
 }
+
+void testLatentDimensionBoundaryBeforeQualificationAllocation()
+{
+    auto log = std::make_shared<BackendLog>();
+    QualifiedTestBackend backend(log);
+    backend.latentCount = rave::maximumLatentDimensions;
+    require(rave::qualifyModelBackend(backend, {48000.0, 8}).empty(),
+            "exactly 4096 latent dimensions qualify");
+    require(log->prepareCalls == 1 && log->processCalls == 2,
+            "4096 boundary runs normal qualification");
+
+    auto oversizedLog = std::make_shared<BackendLog>();
+    QualifiedTestBackend oversized(oversizedLog);
+    oversized.latentCount = rave::maximumLatentDimensions + 1;
+    const auto error = rave::qualifyModelBackend(oversized, {48000.0, 8});
+    require(error.find("4097") != std::string::npos
+                && error.find("4096") != std::string::npos,
+            "4097 latent dimensions fail with actionable boundary diagnostic");
+    require(oversizedLog->prepareCalls == 0 && oversizedLog->processCalls == 0,
+            "oversized model is rejected before worker vectors are populated");
+}
 } // namespace
 
 int main()
@@ -419,5 +442,6 @@ int main()
     testWarmUpFailuresProduceDiagnostics();
     testInvalidRuntimeConfigurationFailsQualification();
     testRepeatedReplacementCyclesRemainBounded();
+    testLatentDimensionBoundaryBeforeQualificationAllocation();
     std::cout << "BackgroundModelLoader tests passed\n";
 }

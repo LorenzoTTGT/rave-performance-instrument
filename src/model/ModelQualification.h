@@ -2,10 +2,15 @@
 
 #include "model/ModelBackend.h"
 
+#include <cstddef>
 #include <string>
 
 namespace rave
 {
+// Shared upper bound for every model-derived latent allocation, state payload,
+// and UI control collection.
+inline constexpr std::size_t maximumLatentDimensions = 4096;
+
 // Validates a runtime configuration against a model without running audio:
 // rejects unset configurations and configurations the model cannot run at
 // (for example an exported sample rate mismatch). Returns an empty string when

@@ -64,6 +64,14 @@ juce::RangedAudioParameter* findParameter(juce::AudioProcessor& processor,
     return nullptr;
 }
 
+class ParameterListenerCounter final : public juce::AudioProcessorParameter::Listener
+{
+public:
+    void parameterValueChanged(int, float) override { ++valueChanges; }
+    void parameterGestureChanged(int, bool) override {}
+    std::atomic<int> valueChanges { 0 };
+};
+
 juce::MemoryBlock xmlState(juce::XmlElement& xml)
 {
     juce::MemoryBlock result;
@@ -184,10 +192,18 @@ void testFactoryAudioAndState()
     auto* concrete = dynamic_cast<RavePluginProcessor*>(processor.get());
     require(concrete != nullptr, "factory returns concrete plugin processor");
     concrete->beginMidiLearn(1);
-    midi.addEvent(juce::MidiMessage::controllerEvent(1, 74, 127), 0);
-    processor->processBlock(buffer, midi);
     auto* macro1 = findParameter(*processor, "macro1");
     require(macro1 != nullptr, "first macro parameter exposed");
+    ParameterListenerCounter listener;
+    macro1->addListener(&listener);
+    midi.addEvent(juce::MidiMessage::controllerEvent(1, 74, 127), 0);
+    processor->processBlock(buffer, midi);
+    require(listener.valueChanges.load() == 0,
+            "MIDI callback does not enter the parameter listener path");
+    concrete->publishPendingMidiParameterChanges();
+    require(listener.valueChanges.load() == 1,
+            "message-thread handoff publishes one coalesced parameter change");
+    macro1->removeListener(&listener);
     require(std::abs(macro1->convertFrom0to1(macro1->getValue()) - 4.0f) < 0.001f,
             "learned MIDI CC controls macro");
 

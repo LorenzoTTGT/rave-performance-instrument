@@ -27,6 +27,11 @@ std::string checkModelConfiguration(ModelBackend& backend, const ModelRuntimeCon
     if (!(configuration.sampleRate > 0.0) || configuration.maximumBlockSize == 0)
         return "No audio runtime configuration is available yet; model loading is deferred";
 
+    if (backend.latentDimensionCount() > maximumLatentDimensions)
+        return "Model has " + std::to_string(backend.latentDimensionCount())
+            + " latent dimensions; maximum supported is "
+            + std::to_string(maximumLatentDimensions);
+
     if (!backend.supportsConfiguration(configuration.sampleRate, configuration.maximumBlockSize))
     {
         const auto modelRate = backend.modelSampleRate();

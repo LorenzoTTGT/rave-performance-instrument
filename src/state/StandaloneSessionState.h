@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/ModelQualification.h"
+
 #include <juce_core/juce_core.h>
 
 #include <array>
@@ -13,7 +15,7 @@ class StandaloneSessionState final
 {
 public:
     static constexpr int schemaVersion = 1;
-    static constexpr std::size_t maximumLatents = 4096;
+    static constexpr std::size_t maximumLatents = maximumLatentDimensions;
     static constexpr std::size_t maximumSerializedBytes = 1024 * 1024;
     static constexpr int dryWetTarget = -1;
 

@@ -668,6 +668,7 @@ private:
             }
             status.setText("Model activation failed: " + juce::String(failure),
                            juce::dontSendNotification);
+            lifecycleStatusGate.markObserved(engine.lifecycleStatusSnapshot().revision);
             startQueuedRequestIfAny();
             return;
         }
@@ -697,9 +698,8 @@ private:
     void refreshLifecycleStatus()
     {
         const auto snapshot = engine.lifecycleStatusSnapshot();
-        if (snapshot.revision == lastLifecycleRevision)
+        if (!lifecycleStatusGate.shouldPublish(snapshot.revision))
             return;
-        lastLifecycleRevision = snapshot.revision;
         status.setText(
             rave::lifecycleStatusText(snapshot.diagnostic, snapshot.modelUsable,
                                       snapshot.modelInstalled, {}, snapshot.latentDimensionCount,
@@ -739,7 +739,7 @@ private:
     juce::StringArray knownMidiIds;
     juce::String activeMidiInputId;
     bool refreshingMidiControl = false;
-    std::uint64_t lastLifecycleRevision = 0;
+    rave::LifecycleStatusRevisionGate lifecycleStatusGate;
 #if RAVE_HAS_LIBTORCH
     bool relinkRequired = false;
     std::unique_ptr<rave::BackgroundModelLoader> modelLoader =

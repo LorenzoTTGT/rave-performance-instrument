@@ -1,4 +1,5 @@
 #include "app/StandalonePresetModelCoordinator.h"
+#include "engine/LifecycleStatusText.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -160,6 +161,18 @@ void testOrdinaryLoadClassifiesSuppressedPresetStates()
             "ordinary active-model candidate keeps RAVE-02 failure behavior");
 }
 
+void testActivationFailureStatusRevisionInterleaving()
+{
+    rave::LifecycleStatusRevisionGate gate;
+    require(gate.shouldPublish(10), "initial lifecycle event publishes");
+    gate.markObserved(11); // explicit candidate-failure event rendered revision 11
+    require(!gate.shouldPublish(11),
+            "immediate lifecycle refresh preserves actionable activation failure");
+    require(gate.shouldPublish(12),
+            "genuinely newer lifecycle event supersedes activation failure");
+    require(!gate.shouldPublish(11), "stale lifecycle event cannot overwrite newer status");
+}
+
 void testEmptyAndStalePresetTransitions()
 {
     rave::StandaloneSessionState state;
@@ -188,6 +201,7 @@ int main()
     testFreshMissingPresetRetainsControlsUntilRelinkActivation();
     testActivationReconcilesByIndex();
     testOrdinaryLoadClassifiesSuppressedPresetStates();
+    testActivationFailureStatusRevisionInterleaving();
     testEmptyAndStalePresetTransitions();
     std::cout << "Standalone preset coordinator tests passed\n";
 }

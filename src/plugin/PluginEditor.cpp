@@ -117,16 +117,18 @@ void RavePluginEditor::chooseModel()
 
 void RavePluginEditor::rebuildLatentControls(const std::size_t dimensionCount)
 {
+    const auto boundedDimensionCount = std::min(
+        dimensionCount, RavePluginProcessor::maximumLatentCount);
     latentAttachments.clear();
     latentMidiButtons.clear();
     latentSliders.clear();
     latentLabels.clear();
-    latentAttachments.reserve(dimensionCount);
-    latentMidiButtons.reserve(dimensionCount);
-    latentSliders.reserve(dimensionCount);
-    latentLabels.reserve(dimensionCount);
+    latentAttachments.reserve(boundedDimensionCount);
+    latentMidiButtons.reserve(boundedDimensionCount);
+    latentSliders.reserve(boundedDimensionCount);
+    latentLabels.reserve(boundedDimensionCount);
 
-    for (std::size_t index = 0; index < dimensionCount; ++index)
+    for (std::size_t index = 0; index < boundedDimensionCount; ++index)
     {
         auto label = std::make_unique<juce::Label>();
         label->setText("Latent " + juce::String(index + 1), juce::dontSendNotification);
