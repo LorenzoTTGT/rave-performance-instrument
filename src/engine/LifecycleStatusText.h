@@ -137,23 +137,32 @@ private:
         : eventContext + juce::String(juce::CharPointer_UTF8(" — current state: ")) + current;
 }
 
-[[nodiscard]] inline juce::String standaloneModelLoadFailureStatus(
+[[nodiscard]] inline juce::String suppressedReplacementFailureStatus(
+    const juce::String& eventLabel,
+    const std::string& errorMessage,
+    const bool relinkRequired)
+{
+    auto event = eventLabel + ": "
+        + juce::String(juce::CharPointer_UTF8(errorMessage.c_str()))
+        + juce::String(juce::CharPointer_UTF8(
+            " — replacement remains suppressed to aligned dry"));
+    if (relinkRequired)
+        event += "; relink required";
+    return event;
+}
+
+[[nodiscard]] inline juce::String standaloneModelFailureStatus(
+    const juce::String& eventLabel,
     const std::string& errorMessage,
     const bool authoritativeReplacement,
     const bool relinkRequired,
     const RaveAudioEngine::LifecycleStatusSnapshot& snapshot)
 {
-    auto event = juce::String("Model load failed: ")
-        + juce::String(juce::CharPointer_UTF8(errorMessage.c_str()));
     if (authoritativeReplacement)
-    {
-        event += juce::String(juce::CharPointer_UTF8(
-            " — replacement remains suppressed to aligned dry"));
-        if (relinkRequired)
-            event += "; relink required";
-        return event;
-    }
+        return suppressedReplacementFailureStatus(eventLabel, errorMessage, relinkRequired);
 
+    const auto event = eventLabel + ": "
+        + juce::String(juce::CharPointer_UTF8(errorMessage.c_str()));
     if (snapshot.modelUsable)
         return event + juce::String(juce::CharPointer_UTF8(
                            " — current state: previous model remains usable — "))
@@ -164,5 +173,15 @@ private:
         event, snapshot, {},
         juce::String(juce::CharPointer_UTF8(
             "No usable model — bounded dry pass-through")));
+}
+
+[[nodiscard]] inline juce::String standaloneModelLoadFailureStatus(
+    const std::string& errorMessage,
+    const bool authoritativeReplacement,
+    const bool relinkRequired,
+    const RaveAudioEngine::LifecycleStatusSnapshot& snapshot)
+{
+    return standaloneModelFailureStatus("Model load failed", errorMessage,
+                                        authoritativeReplacement, relinkRequired, snapshot);
 }
 } // namespace rave

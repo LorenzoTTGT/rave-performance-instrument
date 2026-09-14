@@ -650,11 +650,9 @@ private:
         deviceManager.removeAudioCallback(&engine);
         std::string failure;
         bool activated = false;
-        std::uint64_t activationOutcomeRevision = engine.lifecycleRevision();
         try
         {
             activated = engine.activateModelBackend(std::move(result.backend), &failure);
-            activationOutcomeRevision = engine.lifecycleStatusSnapshot().revision;
         }
         catch (const std::exception& exception)
         {
@@ -678,11 +676,17 @@ private:
                 relinkRequired = presetModelCoordinator.relinkRequired();
                 relinkButton.setEnabled(relinkRequired);
             }
-            status.setText("Model activation failed: " + juce::String(failure),
-                           juce::dontSendNotification);
-            // Preserve only the activation outcome. Reattachment may publish a
-            // newer reset/start failure that must remain visible.
-            lifecycleStatusGate.markObserved(activationOutcomeRevision);
+            const auto lifecycleSnapshot = engine.lifecycleStatusSnapshot();
+            const auto cause = rave::candidateFailureCause(
+                failure.empty() ? "candidate was not accepted" : failure);
+            status.setText(
+                rave::standaloneModelFailureStatus("Model activation failed", cause,
+                                                   request->replacement, relinkRequired,
+                                                   lifecycleSnapshot),
+                juce::dontSendNotification);
+            // The event already includes the coherent post-reattach outcome;
+            // only a genuinely later lifecycle event may supersede it.
+            lifecycleStatusGate.markObserved(lifecycleSnapshot.revision);
             startQueuedRequestIfAny();
             return;
         }

@@ -700,8 +700,9 @@ public:
 class RelinkTwelveLatentBackend final : public rave::ModelBackend
 {
 public:
-    explicit RelinkTwelveLatentBackend(std::shared_ptr<std::atomic<bool>> reject)
-        : rejectLoad(std::move(reject)) {}
+    explicit RelinkTwelveLatentBackend(std::shared_ptr<std::atomic<bool>> reject,
+                                       const bool failActivation = false)
+        : rejectLoad(std::move(reject)), failActivationReset(failActivation) {}
     bool load(const std::string&, std::string& error) override
     {
         if (!rejectLoad->load(std::memory_order_acquire)) return true;
@@ -709,7 +710,16 @@ public:
         return false;
     }
     void prepare(double, std::size_t) override {}
-    bool reset(std::string&) override { return true; }
+    bool reset(std::string& error) override
+    {
+        ++resetCalls;
+        if (failActivationReset && resetCalls == 2)
+        {
+            error = "injected activation reset refusal";
+            return false;
+        }
+        return true;
+    }
     std::size_t latentDimensionCount() const noexcept override { return 12; }
     bool process(const std::span<const float> input, const std::span<const float>,
                  const std::span<float> output) override
@@ -719,6 +729,8 @@ public:
     }
 private:
     std::shared_ptr<std::atomic<bool>> rejectLoad;
+    bool failActivationReset = false;
+    int resetCalls = 0;
 };
 
 void testDeferredRestoreDisappearanceBecomesRelinkRequired()
@@ -794,7 +806,11 @@ void testDeferredRestoreDisappearanceBecomesRelinkRequired()
 void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
 {
     auto reject = std::make_shared<std::atomic<bool>>(false);
-    RavePluginProcessor processor([reject] { return std::make_shared<RelinkTwelveLatentBackend>(reject); });
+    auto failActivation = std::make_shared<std::atomic<bool>>(false);
+    RavePluginProcessor processor([reject, failActivation] {
+        return std::make_shared<RelinkTwelveLatentBackend>(
+            reject, failActivation->load(std::memory_order_acquire));
+    });
     processor.prepareToPlay(48000.0, 2048);
     require(loadModel(processor, modelFile), "injected twelve-latent model activates");
     processor.dryWetParameterReference().setValueNotifyingHost(1.0f);
@@ -841,8 +857,12 @@ void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
     reject->store(true, std::memory_order_release);
     require(processor.relinkMissingModel(modelFile), "failed relink request starts");
     require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(), "failed relink settles");
-    require(processor.isRelinkRequired() && processor.modelStatus().containsIgnoreCase("failed"),
-            "failed relink remains required with truthful status");
+    require(processor.isRelinkRequired()
+                && processor.modelStatus().containsIgnoreCase("injected qualification refusal")
+                && processor.modelStatus().containsIgnoreCase("aligned dry")
+                && processor.modelStatus().containsIgnoreCase("relink required")
+                && !processor.modelStatus().containsIgnoreCase("active"),
+            "qualification-failed relink reports concrete suppressed outcome");
     juce::MemoryBlock failed; processor.getStateInformation(failed);
     parsed = juce::AudioProcessor::getXmlFromBinary(failed.getData(), int(failed.getSize()));
     require(parsed && parsed->getChildByName("Latents")->getIntAttribute("count") == 4,
@@ -876,6 +896,39 @@ void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     require(wetObserved, "successful relink removes suppression and wet output recovers");
+
+    // Re-enter relink state and inject a failure only on the activation reset:
+    // qualification reset succeeds, while activation reset refuses and the
+    // old backend rolls back successfully behind wet suppression.
+    processor.setStateInformation(state.getData(), int(state.getSize()));
+    require(processor.isRelinkRequired(), "second missing restore re-enters relink state");
+    failActivation->store(true, std::memory_order_release);
+    require(processor.relinkMissingModel(modelFile), "activation-failing relink starts");
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(),
+            "activation-failing relink settles");
+    const auto activationStatus = processor.modelStatus();
+    require(processor.isRelinkRequired()
+                && activationStatus.containsIgnoreCase("injected activation reset refusal")
+                && activationStatus.containsIgnoreCase("aligned dry")
+                && activationStatus.containsIgnoreCase("relink required")
+                && !activationStatus.containsIgnoreCase("previous model retained")
+                && !activationStatus.containsIgnoreCase("active"),
+            "activation-failed relink reports suppressed outcome, not rollback audibility");
+    juce::MemoryBlock activationFailedState;
+    processor.getStateInformation(activationFailedState);
+    parsed = juce::AudioProcessor::getXmlFromBinary(
+        activationFailedState.getData(), int(activationFailedState.getSize()));
+    require(parsed && parsed->getChildByName("Latents")->getIntAttribute("count") == 4,
+            "activation-failed relink retains identity and dynamic latent payload");
+    for (int block = 0; block < 3; ++block)
+    {
+        for (int channel = 0; channel < 2; ++channel)
+            for (int sample = 0; sample < audio.getNumSamples(); ++sample)
+                audio.setSample(channel, sample, 1.0f);
+        processor.processBlock(audio, midi);
+    }
+    require(std::abs(audio.getSample(0, 2047) - 1.0f) < .00001f,
+            "activation-failed relink remains suppressed to aligned dry");
     processor.releaseResources();
 }
 #endif

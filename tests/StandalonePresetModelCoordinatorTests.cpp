@@ -195,6 +195,19 @@ void testStandaloneLoaderFailureStatusOutcomes()
                 && text.containsIgnoreCase("relink required")
                 && !text.containsIgnoreCase("active"),
             "replacement failure ignores old active engine and reports suppression/relink");
+    text = rave::standaloneModelFailureStatus(
+        "Model activation failed", "candidate reset refused", true,
+        coordinator.relinkRequired(), usable);
+    require(text.contains("candidate reset refused") && text.containsIgnoreCase("aligned dry")
+                && text.containsIgnoreCase("relink required")
+                && !text.containsIgnoreCase("previous model retained")
+                && !text.containsIgnoreCase("active"),
+            "replacement activation failure reports audible suppression, not engine rollback");
+    text = rave::standaloneModelFailureStatus(
+        "Model activation failed", "candidate reset refused", false, false, usable);
+    require(text.contains("candidate reset refused")
+                && text.containsIgnoreCase("previous model remains usable"),
+            "ordinary activation failure retains truthful prior-model context");
 
     rave::LifecycleStatusRevisionGate gate;
     gate.markObserved(usable.revision);

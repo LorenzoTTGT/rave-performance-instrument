@@ -102,9 +102,10 @@ private:
     void activateModel(rave::ModelBackendPtr backend,
                        const juce::File& modelFile,
                        const std::vector<float>& restoredLatents,
-                       std::uint64_t generation);
+                       std::uint64_t generation,
+                       bool relink);
     bool queueModelRequest(const juce::File&, std::vector<float>, bool relink);
-    void publishModelLoadFailure(const std::string& errorMessage);
+    void publishModelLoadFailure(const std::string& errorMessage, bool relink);
 
     rave::RaveAudioEngine engine;
     juce::AudioParameterFloat* dryWetParameter = nullptr;
@@ -130,7 +131,9 @@ private:
 #if RAVE_HAS_LIBTORCH
     std::uint64_t pendingGeneration = 0;
     std::uint64_t queuedGeneration = 0;
+    bool pendingRelink = false;
 #endif
+    bool queuedRelink = false;
     std::atomic<std::uint64_t> requestGeneration { 0 };
     juce::File requestedMissingModelFile;
     std::vector<float> retainedMissingLatents;

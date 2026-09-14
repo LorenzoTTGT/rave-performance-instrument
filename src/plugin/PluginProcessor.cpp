@@ -106,7 +106,8 @@ void RavePluginProcessor::refreshLifecycleStatus()
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 
-void RavePluginProcessor::publishModelLoadFailure(const std::string& errorMessage)
+void RavePluginProcessor::publishModelLoadFailure(const std::string& errorMessage,
+                                                  const bool relink)
 {
     // Capture the would-be final state before the seam to prove event storage
     // is independent of it. modelStatus() deliberately ignores this snapshot
@@ -116,8 +117,10 @@ void RavePluginProcessor::publishModelLoadFailure(const std::string& errorMessag
         failedLoadStatusInterleaveForTesting();
 
     const juce::ScopedLock lock(modelStateLock);
-    currentModelStatus = "Model load failed: " + juce::String(errorMessage);
-    currentStatusNeedsLifecycle = true;
+    currentModelStatus = relink
+        ? rave::suppressedReplacementFailureStatus("Model load failed", errorMessage, true)
+        : "Model load failed: " + juce::String(errorMessage);
+    currentStatusNeedsLifecycle = !relink;
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
 
@@ -337,6 +340,7 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
             const juce::ScopedLock lock(modelStateLock);
             queuedRestoreModelFile = juce::File {};
             queuedRestoreLatents.clear();
+            queuedRelink = false;
             hasQueuedModelRestore.store(false, std::memory_order_release);
             requestedMissingModelFile = isMissing ? restoredModel : juce::File {};
             retainedMissingLatents = isMissing ? std::move(restoredLatents) : std::vector<float> {};
@@ -406,7 +410,9 @@ bool RavePluginProcessor::isRelinkRequired() const noexcept
 juce::String RavePluginProcessor::requestedModelPath() const
 { const juce::ScopedLock lock(modelStateLock); return requestedMissingModelFile.getFullPathName(); }
 
-bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile, std::vector<float> values, bool)
+bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile,
+                                            std::vector<float> values,
+                                            const bool relink)
 {
 #if RAVE_HAS_LIBTORCH
     const auto generation = requestGeneration.load(std::memory_order_acquire);
@@ -418,6 +424,7 @@ bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile, std::ve
         queuedRestoreModelFile = modelFile;
         queuedRestoreLatents = std::move(values);
         queuedGeneration = generation;
+        queuedRelink = relink;
         hasQueuedModelRestore.store(true, std::memory_order_release);
         currentModelStatus = "Waiting for the host audio configuration before loading a model";
         currentStatusNeedsLifecycle = false;
@@ -430,6 +437,7 @@ bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile, std::ve
     {
         const juce::ScopedLock lock(modelStateLock);
         queuedRestoreModelFile=modelFile; queuedRestoreLatents=std::move(values); queuedGeneration=generation;
+        queuedRelink = relink;
         hasQueuedModelRestore.store(true, std::memory_order_release);
         currentModelStatus="Queued " + modelFile.getFileName() + utf8("…"); currentStatusNeedsLifecycle=false;
         return true;
@@ -440,11 +448,12 @@ bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile, std::ve
     pendingModelFile = modelFile;
     pendingLatentRestore = std::move(values);
     pendingGeneration = generation;
+    pendingRelink = relink;
     currentModelStatus = "Loading " + modelFile.getFileName() + utf8("…");
     currentStatusNeedsLifecycle = false;
     return true;
 #else
-    static_cast<void>(modelFile); static_cast<void>(values);
+    static_cast<void>(modelFile); static_cast<void>(values); static_cast<void>(relink);
     const juce::ScopedLock lock(modelStateLock);
     currentModelStatus = "LibTorch backend unavailable";
     currentStatusNeedsLifecycle = false;
@@ -467,12 +476,15 @@ bool RavePluginProcessor::finishModelLoadIfReady()
     juce::File loadedFile;
     std::vector<float> restoredLatents;
     std::uint64_t generation = 0;
+    bool relink = false;
     {
         const juce::ScopedLock lock(modelStateLock);
         loadedFile = pendingModelFile;
         restoredLatents = std::move(pendingLatentRestore);
         pendingModelFile = juce::File {};
         generation = pendingGeneration;
+        relink = pendingRelink;
+        pendingRelink = false;
     }
     if (generation != requestGeneration.load(std::memory_order_acquire))
         return true;
@@ -481,11 +493,11 @@ bool RavePluginProcessor::finishModelLoadIfReady()
     {
         // Qualification failed, so the previous active model (if any) was never
         // replaced and remains playable.
-        publishModelLoadFailure(result.errorMessage);
+        publishModelLoadFailure(result.errorMessage, relink);
         return true;
     }
 
-    activateModel(std::move(result.backend), loadedFile, restoredLatents, generation);
+    activateModel(std::move(result.backend), loadedFile, restoredLatents, generation, relink);
     return true;
 #else
     return false;
@@ -555,11 +567,13 @@ void RavePluginProcessor::timerCallback()
     juce::File modelFile;
     std::vector<float> restoredLatents;
     std::uint64_t generation = 0;
+    bool relink = false;
     {
         const juce::ScopedLock lock(modelStateLock);
         modelFile = queuedRestoreModelFile;
         restoredLatents = queuedRestoreLatents;
         generation = queuedGeneration;
+        relink = queuedRelink;
     }
 
     // Reconcile generation before interpreting disappearance. A stale queued
@@ -572,6 +586,7 @@ void RavePluginProcessor::timerCallback()
             hasQueuedModelRestore.store(false, std::memory_order_release);
             queuedRestoreModelFile = juce::File {};
             queuedRestoreLatents.clear();
+            queuedRelink = false;
         }
         return;
     }
@@ -586,6 +601,7 @@ void RavePluginProcessor::timerCallback()
             hasQueuedModelRestore.store(false, std::memory_order_release);
             queuedRestoreModelFile = juce::File {};
             queuedRestoreLatents.clear();
+            queuedRelink = false;
             requestedMissingModelFile = modelFile;
             retainedMissingLatents = std::move(restoredLatents);
             relinkRequired = true;
@@ -619,8 +635,10 @@ void RavePluginProcessor::timerCallback()
         pendingModelFile = modelFile;
         pendingLatentRestore = std::move(restoredLatents);
         pendingGeneration = generation;
+        pendingRelink = relink;
         queuedRestoreModelFile = juce::File {};
         queuedRestoreLatents.clear();
+        queuedRelink = false;
         hasQueuedModelRestore.store(false, std::memory_order_release);
         currentModelStatus = "Restoring " + modelFile.getFileName() + utf8("…");
         currentStatusNeedsLifecycle = false;
@@ -690,7 +708,8 @@ void RavePluginProcessor::publishPendingMidiParameterChanges()
 void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
                                         const juce::File& modelFile,
                                         const std::vector<float>& restoredLatents,
-                                        const std::uint64_t generation)
+                                        const std::uint64_t generation,
+                                        const bool relink)
 {
     if (generation != requestGeneration.load(std::memory_order_acquire)) return;
     bool activated = false;
@@ -754,8 +773,11 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
         // it through the explicit UTF-8 pointer.
         const auto cause = rave::candidateFailureCause(
             activationFailure.empty() ? "candidate was not accepted" : activationFailure);
-        currentModelStatus = "Model activation failed: " + utf8(cause.c_str());
-        currentStatusNeedsLifecycle = true;
+        currentModelStatus = relink
+            ? rave::suppressedReplacementFailureStatus(
+                  "Model activation failed", cause, true)
+            : "Model activation failed: " + utf8(cause.c_str());
+        currentStatusNeedsLifecycle = !relink;
     }
     currentModelRevision.fetch_add(1, std::memory_order_release);
 }
