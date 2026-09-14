@@ -175,10 +175,146 @@ ctest --test-dir build-no-torch -N
 ctest --test-dir build-no-torch --output-on-failure
 ```
 
-Expected registration at this baseline:
+Expected registration at this baseline (the RAVE-05 harness support tests are
+registered in LibTorch builds; the harness itself is never a CTest target):
 
-- LibTorch build: 7 tests, including `rave_torch_backend_tests` and `rave_plugin_model_recall_tests`.
-- LibTorch-disabled build: 5 tests; LibTorch-specific tests absent.
+- LibTorch build: 11 tests, including `rave_torch_backend_tests`,
+  `rave_plugin_model_recall_tests`, and `rave_qualification_support_tests`.
+- LibTorch-disabled build: 8 tests; LibTorch-specific tests absent.
+
+### RAVE-05 automated offline qualification harness
+
+The `rave_qualification` command implements the automatable slice of RAVE-05
+against the shared TorchScript backend and `RaveAudioEngine` processing path,
+outside any realtime host. It is a standalone tool built only when LibTorch is
+available, and it is deliberately **not registered with CTest**, so the
+configurable 2-hour soak can never run inside ordinary testing. It does not
+modify production audio or state behavior.
+
+What it measures (explicit, fail-closed thresholds):
+
+- Model identity: SHA-256 (computed before loading; optional `--expect-sha256`
+  gate refuses to load on mismatch), byte size, declared sample rate, latent
+  dimensions, channel counts.
+- Offline model qualification via the production `qualifyModelBackend` seam at
+  48 kHz / 2048 samples.
+- Direct inference timing, measured independently of the engine: the production
+  wet path (`encode` → zero offsets → `decode`) and the plain `forward` path as
+  a reference, p50/p95/p99/max. Threshold: p99 ≤ 90% of the 2048-frame duration
+  (38.4 ms at 48 kHz).
+- The shared engine callback path, paced at real time over the callback-size
+  matrix (64, 128, 256, 512, 1024, 2048) plus an alternating-partition segment.
+  Segments round up to complete callback cycles, so even smoke mode executes
+  every named callback size without classifying a truncated call under a larger
+  nominal period. Per-call `processAudio` wall time is measured; the real-time
+  pacing sleep and stimulus generation are excluded. Thresholds per size: p99
+  ≤ 25% and max ≤ 75% of the callback period.
+- Delayed-dry alignment: at 0% wet the rendered stream must equal the stimulus
+  delayed by exactly 4096 samples, compared with exact float equality. Smoke
+  mode includes at least one maximum-callback-size verification window after
+  the transport latency has elapsed.
+- Reported latency: fixed at the contractual 4096 samples through activation,
+  the paced run, and release; transport readiness asserted.
+- Finite output on every rendered sample and every inference frame.
+- Runtime telemetry after the normal-load run: deadline misses, queue drops,
+  late results, processing errors, reset errors, and alignment errors must all
+  be zero (fail-closed).
+- Deterministic overload/recovery semantics via the documented
+  `publishResultForTesting` engine seam on a stopped no-model engine: malformed,
+  future, duplicate, and post-deadline results are rejected; the missed frame
+  renders aligned dry and is never replayed; a current sequence-valid result
+  commits and fades in over the contractual 5 ms ramp.
+- Soak mode: single 2048-sample callback, configurable duration (default 7200 s),
+  bounded memory (fixed buffers plus capped timing reservoirs), periodic stderr
+  heartbeats with live telemetry and peak RSS.
+
+What it explicitly labels `unverified` (never passed by an offline run): host
+and device xruns, device I/O latency, wet-path impulse latency through the
+nonlinear model, perceptual latency, interactive host soak, standalone real
+device changes and MIDI reconnect, DAW scanning/automation/recall, host-session
+memory growth, and realtime-priority scheduling effects. The verdict string
+always states that passing offline measurements does not by itself satisfy
+RAVE-05.
+
+Build (portable CMake; adjust the prefix to any LibTorch install):
+
+```sh
+cmake -S . -B build-qual -G Ninja \
+  -DCMAKE_DISABLE_FIND_PACKAGE_JUCE=TRUE \
+  -DRAVE_ENABLE_LIBTORCH=ON \
+  -DCMAKE_PREFIX_PATH="$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)')"
+cmake --build build-qual --parallel
+```
+
+Model hash gate and runs (the fixture stays in the local, git-ignored
+`.qualification-models/` directory and is never copied or committed):
+
+```sh
+/usr/bin/shasum -a 256 .qualification-models/birds_pluma_b2048_r48000_z12.ts
+# must print a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68
+
+# Fast smoke (a few seconds of paced audio; verification only):
+./build-qual/rave_qualification --mode smoke \
+  --model .qualification-models/birds_pluma_b2048_r48000_z12.ts \
+  --expect-sha256 a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68 \
+  --json evidence/rave-qualification-smoke.json
+
+# Benchmark (default 60 paced seconds across the callback matrix):
+./build-qual/rave_qualification --mode benchmark \
+  --model .qualification-models/birds_pluma_b2048_r48000_z12.ts \
+  --expect-sha256 a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68 \
+  --duration-seconds 120 --json evidence/rave-qualification-benchmark.json
+
+# Required 2-hour soak (run on a quiet machine; not a CTest target):
+./build-qual/rave_qualification --mode soak \
+  --model .qualification-models/birds_pluma_b2048_r48000_z12.ts \
+  --expect-sha256 a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68 \
+  --duration-seconds 7200 --json evidence/rave-qualification-soak-2h.json \
+  2> evidence/rave-qualification-soak-2h-progress.log
+```
+
+Run on a quiet machine: every timing threshold is fail-closed, and competing
+system load shows up as honest failures. Each report records the 1-minute load
+average for context. Progress heartbeats go to stderr; the human summary goes
+to stdout; the machine-readable JSON (schema `rave-qualification/1`) goes to
+`--json <path>` or, without it, to stdout after the summary. The report
+identifies the exact git commit and dirty/clean state of the build tree, model
+hash/path identity, hardware and configuration fields (CPU model, architecture,
+cores, memory, OS, build type, compiler, LibTorch/JUCE versions), the full
+run configuration, all timing distributions, latency, finite-output status,
+engine telemetry, per-threshold pass/fail/not-run status, the unverified list,
+and peak RSS.
+
+Exit codes: 0 pass; 1 one or more measured thresholds failed; 2 usage or input
+error (missing model, invalid arguments); 3 model hash mismatch; 4 model load
+or qualification failure; 5 unexpected error.
+
+Store evidence JSON files outside the repository tree (for example
+`evidence/`, which is not tracked); the template in
+[`docs/RAVE05_QUALIFICATION_REPORT_TEMPLATE.md`](RAVE05_QUALIFICATION_REPORT_TEMPLATE.md)
+defines the full report structure, and the manual checklist below is the
+remaining RAVE-05 work after the automated slice.
+
+### RAVE-05 manual host, device, and soak checklist
+
+The following cannot be automated by this repository and remain manual RAVE-05
+work. Record each item in a RAVE-05 report using the template:
+
+- Logic Pro (AU): scan, editor-closed recall, automation of `dryWet` and
+  `macro1`–`macro8`, bypass, transport start/stop, latency compensation
+  reporting, session reopen, ≥30-minute interactive soak.
+- REAPER (VST3 and AU): the same items per format, plus multiple instances and
+  offline render behavior.
+- Ableton Live (VST3): the same items, plus plug-in device panel behavior
+  across sample-rate and buffer-size changes.
+- Standalone: real input/output device selection and changes, MIDI
+  disconnect/reconnect, `.ravepreset` reopen, model failure recovery, and a
+  ≥30-minute interactive soak with representative input.
+- During every soak: no crash, deadlock, unbounded memory growth, non-finite
+  output, or unexplained counter increase; host/device xrun counters recorded
+  per host; controlled synthetic overload and recovery observed audibly and via
+  the plugin status surface.
+- Perceptual/intrinsic model latency judgment and final human icon observation.
 
 ### Plugin packaging and hosts
 

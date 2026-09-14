@@ -15,6 +15,7 @@ Latest local qualification evidence:
 - Current RAVE-06 LibTorch-disabled build and CTest: 8/8 passing, including deterministic icon assets.
 - The preceding RAVE-04 LibTorch qualification passed 9/9, including plugin model-path and latent recall with the hash-gated real fixture; the post-icon LibTorch matrix remains a RAVE-05 check.
 - Current VST3 and AU bundles build, contain the generated icon resources, and pass strict ad-hoc signature verification.
+- The RAVE-05 automated offline slice now exists as the `rave_qualification` command (LibTorch builds only): it hash-gates the local fixture, benchmarks direct inference and the shared engine callback path over the callback-size matrix plus alternating partitions, checks finite output, fixed 4096-sample latency, delayed-dry alignment, telemetry, and deterministic seam-driven overload/recovery, and supports a bounded-memory configurable 2-hour soak. It is not registered with CTest; the documented commands, fail-closed thresholds, and the explicit unverified list are in `docs/QUALIFICATION.md`.
 
 Deterministic tests qualify lifecycle behavior, exact transport timing, variable callback partitions, deadline commitment, fallback/recovery fades, queue saturation, stale-result rejection, telemetry epochs, and the SHA-256-verified local RAVE fixture. DAW hosts, long-duration performance, and perceptual/intrinsic model latency remain unqualified.
 
@@ -118,8 +119,8 @@ Add shared-state/standalone tests for restore-before-prepare, reprepare, missing
 Depends on: RAVE-03, RAVE-04, and RAVE-06 verified.
 
 - [ ] Benchmark selected real RAVE models on the target Mac under representative concurrent audio load.
-- [ ] Record callback and inference timing distributions, latency, CPU, memory, queue drops, deadline misses, and processing errors against RAVE-01 thresholds.
-- [ ] Run the agreed soak duration, including overload and recovery.
+- [ ] Record callback and inference timing distributions, latency, CPU, memory, queue drops, deadline misses, and processing errors against RAVE-01 thresholds. The automated offline slice is measured by `rave_qualification`; CPU/memory under interactive hosts and host xruns remain manual.
+- [ ] Run the agreed soak duration, including overload and recovery: the automated 2-hour engine soak via `rave_qualification --mode soak` (fail-closed telemetry and finite-output checks, bounded memory), plus the manual per-host interactive soaks with controlled synthetic overload.
 - [ ] Verify standalone device changes, MIDI disconnect/reconnect, preset reopen, and model failure recovery.
 - [ ] Validate VST3 and AU scanning and operation in selected hosts, including editor-closed recall, automation, bypass, transport changes, repeated prepare/release, and multiple instances.
 - [ ] Test offline rendering and either support deterministic behavior or document the limitation.
@@ -138,10 +139,28 @@ cmake -S . -B build-no-torch -G Ninja \
 cmake --build build-no-torch --parallel
 ctest --test-dir build-no-torch --output-on-failure
 
+# RAVE-05 automated offline slice (LibTorch build; fixture stays local/ignored;
+# never a CTest target so the long soak cannot run inside ordinary testing):
+/usr/bin/shasum -a 256 .qualification-models/birds_pluma_b2048_r48000_z12.ts
+# must print a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68
+./build-qual/rave_qualification --mode smoke \
+  --model .qualification-models/birds_pluma_b2048_r48000_z12.ts \
+  --expect-sha256 a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68 \
+  --json evidence/rave-qualification-smoke.json
+./build-qual/rave_qualification --mode soak --duration-seconds 7200 \
+  --model .qualification-models/birds_pluma_b2048_r48000_z12.ts \
+  --expect-sha256 a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68 \
+  --json evidence/rave-qualification-soak-2h.json \
+  2> evidence/rave-qualification-soak-2h-progress.log
+
 codesign --verify --strict --verbose=2 "<VST3 bundle>"
 codesign --verify --strict --verbose=2 "<AU bundle>"
 auval -v aumf RvPI RvAI
 ```
+
+Automated evidence schema, threshold semantics, and the remaining manual
+Logic/REAPER/Ableton/standalone checklist live in `docs/QUALIFICATION.md` and
+`docs/RAVE05_QUALIFICATION_REPORT_TEMPLATE.md`.
 
 Host installation, registration, signing identities, notarization, and release remain separate authorized delivery operations.
 

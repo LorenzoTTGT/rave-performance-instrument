@@ -66,6 +66,37 @@ if(RAVE_ENABLE_LIBTORCH)
     endif()
 endif()
 
+# RAVE-05 offline qualification harness. A standalone command-line tool that
+# benchmarks the TorchScript backend and the shared RaveAudioEngine path
+# outside realtime hosts. It is deliberately NOT registered with CTest so the
+# configurable long soak can never run inside ordinary testing; see
+# docs/QUALIFICATION.md for the evidence workflow.
+if(Torch_FOUND)
+    set(RAVE_QUALIFICATION_JUCE_VERSION "7.0.9 (FetchContent)")
+    if(DEFINED JUCE_VERSION AND NOT "${JUCE_VERSION}" STREQUAL "")
+        set(RAVE_QUALIFICATION_JUCE_VERSION "${JUCE_VERSION}")
+    endif()
+    if("${Torch_VERSION}" STREQUAL "")
+        set(RAVE_QUALIFICATION_TORCH_VERSION "unknown")
+    else()
+        set(RAVE_QUALIFICATION_TORCH_VERSION "${Torch_VERSION}")
+    endif()
+    add_executable(rave_qualification tools/qualification/RaveQualificationMain.cpp)
+    target_include_directories(rave_qualification PRIVATE tools)
+    target_link_libraries(rave_qualification PRIVATE
+        rave_engine
+        juce::juce_core
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+    target_compile_definitions(rave_qualification PRIVATE
+        RAVE_QUALIFICATION_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        RAVE_QUALIFICATION_BUILD_TYPE="$<IF:$<CONFIG:>,Unspecified,$<CONFIG>>"
+        RAVE_QUALIFICATION_LIBTORCH_VERSION="${RAVE_QUALIFICATION_TORCH_VERSION}"
+        RAVE_QUALIFICATION_JUCE_VERSION="${RAVE_QUALIFICATION_JUCE_VERSION}"
+    )
+endif()
+
 target_compile_definitions(rave_engine
     PUBLIC
         JUCE_USE_CURL=0
@@ -129,6 +160,16 @@ if(BUILD_TESTING)
                         "$<TARGET_FILE:rave_torch_backend_tests>"
             )
         endif()
+
+        # Fast unit tests for the qualification harness support logic. The
+        # harness itself is never a CTest target (see above).
+        add_executable(rave_qualification_support_tests
+            tests/RaveQualificationSupportTests.cpp)
+        target_include_directories(rave_qualification_support_tests PRIVATE tools)
+        target_link_libraries(rave_qualification_support_tests PRIVATE
+            juce::juce_recommended_warning_flags)
+        add_test(NAME rave_qualification_support_tests
+                 COMMAND rave_qualification_support_tests)
     endif()
 endif()
 

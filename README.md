@@ -175,6 +175,50 @@ without desktop automation with:
 python3 assets/icon/generate_icon.py --check
 ```
 
+### RAVE-05 qualification harness
+
+LibTorch builds also provide `rave_qualification`, an offline command that
+benchmarks the TorchScript backend and the shared `RaveAudioEngine` processing
+path with a hash-gated local model fixture (the fixture stays in the ignored
+`.qualification-models/` directory and is never committed):
+
+```sh
+cmake -S . -B build-qual -G Ninja \
+  -DCMAKE_DISABLE_FIND_PACKAGE_JUCE=TRUE \
+  -DRAVE_ENABLE_LIBTORCH=ON \
+  -DCMAKE_PREFIX_PATH="$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)')"
+cmake --build build-qual --parallel
+
+/usr/bin/shasum -a 256 .qualification-models/birds_pluma_b2048_r48000_z12.ts
+# must print a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68
+
+./build-qual/rave_qualification --mode smoke \
+  --model .qualification-models/birds_pluma_b2048_r48000_z12.ts \
+  --expect-sha256 a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68 \
+  --json evidence/rave-qualification-smoke.json
+```
+
+The harness measures direct inference and paced real-time callback timing over
+the 64–2048 callback matrix plus alternating partitions, using complete
+callbacks even in smoke mode, checks finite output, the fixed 4096-sample
+reported latency, a post-latency delayed-dry verification window, and
+zero-counter runtime telemetry, exercises deterministic overload/recovery
+semantics through the engine's test seam, and offers `--mode soak` with a
+default 7200-second (2-hour) bounded-memory run. Thresholds are explicit and
+fail-closed; timing thresholds require a quiet machine, and every report
+records the 1-minute load average, the exact git revision and dirty state, the
+model hash, and the hardware/configuration identity.
+
+Limitations: this is an offline, non-realtime harness. It never observes audio
+devices, hosts, or DAWs, so host/device xruns, device I/O latency, wet-path
+impulse and perceptual latency, DAW scanning/automation/recall, real-device
+standalone behavior, and interactive soaks remain unverified by it and require
+the manual checklist in [`docs/QUALIFICATION.md`](docs/QUALIFICATION.md). The
+harness is not registered with CTest, so the long soak can never run inside
+ordinary testing. See
+[`docs/RAVE05_QUALIFICATION_REPORT_TEMPLATE.md`](docs/RAVE05_QUALIFICATION_REPORT_TEMPLATE.md)
+for the evidence template.
+
 ## First milestone
 
 Run one model continuously in a standalone app with:
