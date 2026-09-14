@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 3,
-    "revision": 16,
+    "revision": 25,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -115,14 +115,35 @@
         },
         "generation": 1,
         "work": "implemented",
-        "receipts": {},
+        "receipts": {
+          "verified": {
+            "generation": 1,
+            "commit": "c15341f8dfea1a890cd795721b4c666a243492fc",
+            "evidence": "Reserved independent Sol-high rave03-final-review PASS on the complete baseline-to-candidate patch after all production and deterministic-evidence findings were corrected. At exact commit c15341f: LibTorch build/full suite with SHA-256-verified birds_pluma fixture passed 7/7; fresh Debug no-LibTorch build/full suite passed 5/5; focused timing test passed 20 consecutive runs; zero JUCE assertion/failure log matches; git diff --check passed. Fixed Q=2048/L=4096, exact D=P-F commitment, aligned fallback/recovery, epoch queue clearing, bounded telemetry, plugin latency 4096, and stable parameter IDs verified.",
+            "recordedAt": "2026-09-13T12:14:04.061Z"
+          },
+          "committed": {
+            "generation": 1,
+            "commit": "c15341f8dfea1a890cd795721b4c666a243492fc",
+            "evidence": "Complete reviewed RAVE-03 implementation, deterministic qualification tests, authored roadmap reconciliation, and portable ledger revision 16 are committed through c15341f8dfea1a890cd795721b4c666a243492fc; canonical checkout is clean.",
+            "recordedAt": "2026-09-13T12:14:11.539Z"
+          },
+          "pushed": {
+            "generation": 1,
+            "commit": "c15341f8dfea1a890cd795721b4c666a243492fc",
+            "evidence": "git push origin main succeeded and git ls-remote verified origin/main exactly c15341f8dfea1a890cd795721b4c666a243492fc.",
+            "recordedAt": "2026-09-13T12:14:32.575Z",
+            "reference": "origin/main"
+          }
+        },
         "ownership": {
           "owner": "pi-root",
           "branch": "main",
           "worktree": "canonical",
-          "status": "claimed",
+          "status": "released",
           "claimedAt": "2026-09-13T03:23:10.218Z",
-          "updatedAt": "2026-09-13T03:23:10.218Z"
+          "updatedAt": "2026-09-13T12:14:40.028Z",
+          "reason": "RAVE-03 completed through verified commit and confirmed origin/main push."
         }
       },
       {
@@ -146,8 +167,29 @@
           "branch": "main"
         },
         "generation": 1,
-        "work": "todo",
-        "receipts": {}
+        "work": "implemented",
+        "receipts": {
+          "verified": {
+            "generation": 1,
+            "commit": "7b3c93389cac810b805384d344ded76426d916f5",
+            "evidence": "Independent Sol-high final review PASS on c15341f..7b3c933. Exact commit no-LibTorch suite passed 7/7; LibTorch RAVE_HAS_LIBTORCH=1 suite passed 9/9 including hash-gated real-model recall; standalone/VST3/AU built; strict VST3/AU codesign passed; fixture SHA-256 matched a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68; diff-check and status clean. Evidence: /tmp/rave04-final-evidence/README-final.txt.",
+            "recordedAt": "2026-09-14T11:28:06.197Z"
+          },
+          "committed": {
+            "generation": 1,
+            "commit": "7b3c93389cac810b805384d344ded76426d916f5",
+            "evidence": "Reviewed RAVE-04 implementation and deterministic regression coverage are committed through 7b3c93389cac810b805384d344ded76426d916f5; canonical checkout was clean before the roadmap receipt export changed only the portable roadmap snapshot.",
+            "recordedAt": "2026-09-14T11:28:15.517Z"
+          }
+        },
+        "ownership": {
+          "owner": "pi-root",
+          "branch": "main",
+          "worktree": "canonical",
+          "status": "claimed",
+          "claimedAt": "2026-09-13T12:14:57.050Z",
+          "updatedAt": "2026-09-13T12:14:57.050Z"
+        }
       },
       {
         "id": "rave-05-qualification",
@@ -207,14 +249,15 @@
         "receipts": {}
       }
     ],
-    "updatedAt": "2026-09-13T11:59:24.453Z",
+    "updatedAt": "2026-09-14T11:28:15.517Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "d03d255c35990dad46ad0adceafe1692ff3547011a4c978d68e7708d29dbdfec",
     "07d745b5ac4366294cb4cb5e7129e59a90c1818b7b8557acd0e4ad2f4481f720",
     "80f5d91eb99f45c00e3a84cd1aaf361cf75083effbdad7293282d966d846477f",
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "d03d255c35990dad46ad0adceafe1692ff3547011a4c978d68e7708d29dbdfec"
+  "hash": "6669eb09f8e8c84a9756346a4465a23eecbe984726f08a7d827ad1c17909684e"
 }
