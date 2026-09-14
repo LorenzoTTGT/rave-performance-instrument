@@ -799,6 +799,29 @@ void testDeferredRestoreDisappearanceBecomesRelinkRequired()
     require(!stale.isRelinkRequired() && stale.requestedModelPath().isEmpty(),
             "stale disappearance cannot create relink state");
     stale.releaseResources();
+
+    RavePluginProcessor activationRace([reject] {
+        return std::make_shared<RelinkTwelveLatentBackend>(reject);
+    });
+    activationRace.prepareToPlay(48000.0, 8);
+    reject->store(false, std::memory_order_release);
+    require(activationRace.startModelLoad(newestFile), "activation-race candidate starts");
+    require(waitForModelSettled(activationRace), "activation-race candidate qualifies");
+    bool newerRestoreCommitted = false;
+    activationRace.activationMutationInterleaveForTesting = [&] {
+        activationRace.activationMutationInterleaveForTesting = {};
+        juce::XmlElement empty("RavePluginState");
+        empty.setAttribute("version", 2);
+        auto emptyState = xmlState(empty);
+        activationRace.setStateInformation(emptyState.getData(), int(emptyState.getSize()));
+        newerRestoreCommitted = true;
+    };
+    require(activationRace.finishModelLoadIfReady(), "stale activation result consumed");
+    require(newerRestoreCommitted && activationRace.latentDimensionCount() == 0
+                && !activationRace.modelStatus().containsIgnoreCase("active"),
+            "newer empty restore wins before activation mutation transaction");
+    activationRace.releaseResources();
+
     modelFile.deleteFile();
     newestFile.deleteFile();
 }
@@ -855,8 +878,13 @@ void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
             "missing restore suppresses wet to exactly aligned dry");
 
     reject->store(true, std::memory_order_release);
-    require(processor.relinkMissingModel(modelFile), "failed relink request starts");
-    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(), "failed relink settles");
+    missing.setAttribute("modelPath", modelFile.getFullPathName());
+    missing.setAttribute("relinkRequired", true);
+    auto existingReplacementState = xmlState(missing);
+    processor.setStateInformation(existingReplacementState.getData(),
+                                  int(existingReplacementState.getSize()));
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(),
+            "existing-path replacement qualification failure settles");
     require(processor.isRelinkRequired()
                 && processor.modelStatus().containsIgnoreCase("injected qualification refusal")
                 && processor.modelStatus().containsIgnoreCase("aligned dry")
@@ -900,10 +928,11 @@ void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
     // Re-enter relink state and inject a failure only on the activation reset:
     // qualification reset succeeds, while activation reset refuses and the
     // old backend rolls back successfully behind wet suppression.
-    processor.setStateInformation(state.getData(), int(state.getSize()));
-    require(processor.isRelinkRequired(), "second missing restore re-enters relink state");
     failActivation->store(true, std::memory_order_release);
-    require(processor.relinkMissingModel(modelFile), "activation-failing relink starts");
+    processor.setStateInformation(existingReplacementState.getData(),
+                                  int(existingReplacementState.getSize()));
+    require(processor.isRelinkRequired(),
+            "existing-path schema replacement retains relink authority");
     require(waitForModelSettled(processor) && processor.finishModelLoadIfReady(),
             "activation-failing relink settles");
     const auto activationStatus = processor.modelStatus();
@@ -1020,6 +1049,18 @@ void testStateRestoreReconcilesMidiMailboxes()
                 && std::abs(processor.macroParameterReference(0).convertFrom0to1(
                                 processor.macroParameterReference(0).getValue()) + 2.0f) < 0.001f,
             "validated state supersedes unpublished pre-restore MIDI values");
+
+    juce::MidiBuffer stalePublish;
+    stalePublish.addEvent(juce::MidiMessage::controllerEvent(1, 71, 127), 0);
+    processor.processBlock(audio, stalePublish);
+    processor.midiPublishInterleaveForTesting = [&] {
+        processor.midiPublishInterleaveForTesting = {};
+        processor.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    };
+    processor.publishPendingMidiParameterChanges();
+    require(std::abs(processor.macroParameterReference(0).convertFrom0to1(
+                         processor.macroParameterReference(0).getValue()) + 2.0f) < 0.001f,
+            "restore epoch aborts publisher that captured stale MIDI");
 
     juce::MidiBuffer oldPending;
     oldPending.addEvent(juce::MidiMessage::controllerEvent(1, 71, 10), 0);

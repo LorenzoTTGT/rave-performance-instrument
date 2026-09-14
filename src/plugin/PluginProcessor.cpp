@@ -91,6 +91,7 @@ void RavePluginProcessor::prepareToPlay(const double sampleRate, const int sampl
 
 void RavePluginProcessor::refreshLifecycleStatus()
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     // Lock order for every status commit is modelStateLock, then the engine's
     // lifecycleMutex through lifecycleStatusSnapshot(). Activation releases
     // lifecycle ownership before taking modelStateLock, so this order cannot
@@ -109,6 +110,7 @@ void RavePluginProcessor::refreshLifecycleStatus()
 void RavePluginProcessor::publishModelLoadFailure(const std::string& errorMessage,
                                                   const bool relink)
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     // Capture the would-be final state before the seam to prove event storage
     // is independent of it. modelStatus() deliberately ignores this snapshot
     // and derives engine truth anew for every read.
@@ -256,8 +258,16 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         float value = 0.0f;
         std::memcpy(&value, data, sizeof(value));
         if (std::isfinite(value))
+        {
+            const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
+            const auto captured = midiValueSequences[0].load(std::memory_order_acquire);
+            ++parameterCommitEpoch;
             dryWetParameter->setValueNotifyingHost(
                 dryWetParameter->convertTo0to1(juce::jlimit(0.0f, 1.0f, value)));
+            if (midiValueSequences[0].load(std::memory_order_acquire) == captured)
+                midiPublishedSequences[0].store(captured, std::memory_order_release);
+            ++parameterCommitEpoch;
+        }
         return;
     }
 
@@ -310,14 +320,26 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     if (restoredModelPath.length() > 4096)
         return;
 
-    // Validation is now complete. Capture the exact callback generations that
-    // this state commit supersedes; a callback arriving after this boundary
-    // must remain pending and authoritative.
+    // Parsing/validation stays outside the mutation transaction. The validated
+    // commit, mailbox reconciliation, and model generation then linearize as
+    // one non-realtime operation.
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
+    const auto restoredRelinkRequested = version >= 2
+        && state->getBoolAttribute("relinkRequired", false);
+    bool replacementRestore = restoredRelinkRequested;
+    {
+        const juce::ScopedLock lock(modelStateLock);
+        replacementRestore = replacementRestore || relinkRequired;
+    }
+
+    // Capture the exact callback generations that this state commit supersedes;
+    // a callback arriving after this boundary must remain pending and authoritative.
     std::array<std::uint64_t, midiTargetCount> capturedMidiSequences {};
     for (std::size_t target = 0; target < midiTargetCount; ++target)
         capturedMidiSequences[target]
             = midiValueSequences[target].load(std::memory_order_acquire);
 
+    ++parameterCommitEpoch;
     const auto restoreParameter = [](juce::AudioParameterFloat& parameter, const float value) {
         parameter.setValueNotifyingHost(parameter.convertTo0to1(value));
     };
@@ -337,6 +359,7 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         if (midiValueSequences[target].load(std::memory_order_acquire) == captured)
             midiPublishedSequences[target].store(captured, std::memory_order_release);
     }
+    ++parameterCommitEpoch;
 
     const juce::File restoredModel(restoredModelPath);
     requestGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -344,11 +367,16 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     {
         {
             const juce::ScopedLock lock(modelStateLock);
-            relinkRequired = false;
-            requestedMissingModelFile = juce::File {};
-            retainedMissingLatents.clear();
+            relinkRequired = replacementRestore;
+            requestedMissingModelFile = replacementRestore ? restoredModel : juce::File {};
+            retainedMissingLatents = replacementRestore ? restoredLatents : std::vector<float> {};
+            if (replacementRestore)
+                activeModelFile = juce::File {};
         }
-        static_cast<void>(queueModelRequest(restoredModel, std::move(restoredLatents), false));
+        if (replacementRestore)
+            engine.setWetSuppressed(true);
+        static_cast<void>(queueModelRequest(
+            restoredModel, std::move(restoredLatents), replacementRestore));
     }
     else
     {
@@ -410,12 +438,14 @@ bool RavePluginProcessor::isLearningMidiTarget(const std::size_t targetIndex) co
 
 bool RavePluginProcessor::startModelLoad(const juce::File& modelFile)
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     requestGeneration.fetch_add(1, std::memory_order_acq_rel);
     return queueModelRequest(modelFile, {}, false);
 }
 
 bool RavePluginProcessor::relinkMissingModel(const juce::File& modelFile)
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     std::vector<float> values;
     { const juce::ScopedLock lock(modelStateLock); if (!relinkRequired) return false; values = retainedMissingLatents; }
     requestGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -431,6 +461,7 @@ bool RavePluginProcessor::queueModelRequest(const juce::File& modelFile,
                                             std::vector<float> values,
                                             const bool relink)
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
 #if RAVE_HAS_LIBTORCH
     const auto generation = requestGeneration.load(std::memory_order_acquire);
     // Retain the newest request until a real host/device configuration exists.
@@ -490,6 +521,10 @@ bool RavePluginProcessor::finishModelLoadIfReady()
         return false;
 
     auto result = modelLoader->takeResult();
+    if (result.state == rave::BackgroundModelLoader::State::succeeded
+        && activationMutationInterleaveForTesting)
+        activationMutationInterleaveForTesting();
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     juce::File loadedFile;
     std::vector<float> restoredLatents;
     std::uint64_t generation = 0;
@@ -572,6 +607,7 @@ bool RavePluginProcessor::setLatentControl(const std::size_t index, const float 
 
 void RavePluginProcessor::timerCallback()
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     publishPendingMidiParameterChanges();
     refreshLifecycleStatus();
     static_cast<void>(finishModelLoadIfReady());
@@ -704,20 +740,27 @@ void RavePluginProcessor::applyRawMidiEventForTesting(const std::uint8_t* const 
 
 void RavePluginProcessor::publishPendingMidiParameterChanges()
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     for (std::size_t target = 0; target < midiTargetCount; ++target)
     {
         const auto sequence = midiValueSequences[target].load(std::memory_order_acquire);
         if (sequence == midiPublishedSequences[target].load(std::memory_order_relaxed))
             continue;
         const auto value = midiLatestValues[target].load(std::memory_order_relaxed);
+        const auto capturedEpoch = parameterCommitEpoch;
+        if ((capturedEpoch & 1u) != 0)
+            continue;
         if (midiPublishInterleaveForTesting)
             midiPublishInterleaveForTesting();
+        if (parameterCommitEpoch != capturedEpoch)
+            continue;
         auto* const parameter = target == 0 ? dryWetParameter : macroParameters[target - 1];
         if (parameter != nullptr)
             parameter->setValueNotifyingHost(value);
         // A callback may have published a newer value while JUCE listeners
         // ran. Never mark that newer mailbox consumed by this stale notify.
-        if (midiValueSequences[target].load(std::memory_order_acquire) == sequence)
+        if (parameterCommitEpoch == capturedEpoch
+            && midiValueSequences[target].load(std::memory_order_acquire) == sequence)
             midiPublishedSequences[target].store(sequence, std::memory_order_release);
     }
 }
@@ -728,6 +771,7 @@ void RavePluginProcessor::activateModel(rave::ModelBackendPtr backend,
                                         const std::uint64_t generation,
                                         const bool relink)
 {
+    const std::lock_guard<std::recursive_mutex> mutationLock(nonRealtimeMutationMutex);
     if (generation != requestGeneration.load(std::memory_order_acquire)) return;
     bool activated = false;
     std::string activationFailure;

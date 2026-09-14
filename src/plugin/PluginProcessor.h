@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 class RavePluginProcessor final : public juce::AudioProcessor,
@@ -97,6 +98,9 @@ public:
     // Invoked after validated state parameters commit and before captured MIDI
     // generations are acknowledged.
     std::function<void()> stateRestoreMidiAcknowledgeInterleaveForTesting;
+    // Invoked immediately before activation enters the serialized mutation
+    // transaction, allowing a newer restore to win deterministically.
+    std::function<void()> activationMutationInterleaveForTesting;
 
 private:
     void timerCallback() override;
@@ -110,6 +114,10 @@ private:
     bool queueModelRequest(const juce::File&, std::vector<float>, bool relink);
     void publishModelLoadFailure(const std::string& errorMessage, bool relink);
 
+    // Outermost lock for message/non-realtime mutations. Recursive because
+    // JUCE listener callbacks and test seams may synchronously re-enter.
+    mutable std::recursive_mutex nonRealtimeMutationMutex;
+    std::uint64_t parameterCommitEpoch = 0;
     rave::RaveAudioEngine engine;
     juce::AudioParameterFloat* dryWetParameter = nullptr;
     std::array<juce::AudioParameterFloat*, macroCount> macroParameters {};
