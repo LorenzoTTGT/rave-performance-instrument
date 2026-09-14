@@ -616,30 +616,37 @@ void RavePluginProcessor::applyMidi(juce::MidiBuffer& midiMessages) noexcept
     {
         // Inspect JUCE's non-owning event bytes directly. getMessage() may
         // allocate by constructing an owning MidiMessage for long SysEx data.
-        const auto* const data = metadata.data;
-        if (data == nullptr || metadata.numBytes < 3 || (data[0] & 0xf0u) != 0xb0u)
-            continue;
-
-        const auto controller = static_cast<int>(data[1] & 0x7fu);
-        const auto learnedTarget = learningMidiTarget.exchange(-1, std::memory_order_acq_rel);
-        if (learnedTarget >= 0 && learnedTarget < static_cast<int>(midiTargetCount))
-            midiControllers[static_cast<std::size_t>(learnedTarget)].store(
-                controller, std::memory_order_relaxed);
-
-        const auto normalizedValue = static_cast<float>(data[2] & 0x7fu) / 127.0f;
-        for (std::size_t target = 0; target < midiTargetCount; ++target)
-        {
-            if (midiControllers[target].load(std::memory_order_relaxed) != controller)
-                continue;
-
-            auto* const parameter = target == 0 ? dryWetParameter : macroParameters[target - 1];
-            if (parameter != nullptr)
-            {
-                midiLatestValues[target].store(normalizedValue, std::memory_order_relaxed);
-                midiValueSequences[target].fetch_add(1, std::memory_order_release);
-            }
-        }
+        applyRawMidiEvent(metadata.data, metadata.numBytes);
     }
+}
+
+void RavePluginProcessor::applyRawMidiEvent(const std::uint8_t* const data,
+                                            const int byteCount) noexcept
+{
+    if (data == nullptr || byteCount != 3 || (data[0] & 0xf0u) != 0xb0u
+        || data[1] >= 0x80u || data[2] >= 0x80u)
+        return;
+
+    const auto controller = static_cast<int>(data[1]);
+    const auto learnedTarget = learningMidiTarget.exchange(-1, std::memory_order_acq_rel);
+    if (learnedTarget >= 0 && learnedTarget < static_cast<int>(midiTargetCount))
+        midiControllers[static_cast<std::size_t>(learnedTarget)].store(
+            controller, std::memory_order_relaxed);
+
+    const auto normalizedValue = static_cast<float>(data[2]) / 127.0f;
+    for (std::size_t target = 0; target < midiTargetCount; ++target)
+    {
+        if (midiControllers[target].load(std::memory_order_relaxed) != controller)
+            continue;
+        midiLatestValues[target].store(normalizedValue, std::memory_order_relaxed);
+        midiValueSequences[target].fetch_add(1, std::memory_order_release);
+    }
+}
+
+void RavePluginProcessor::applyRawMidiEventForTesting(const std::uint8_t* const data,
+                                                      const int byteCount) noexcept
+{
+    applyRawMidiEvent(data, byteCount);
 }
 
 void RavePluginProcessor::publishPendingMidiParameterChanges()

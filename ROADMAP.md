@@ -12,8 +12,8 @@ The repository currently contains a shared JUCE audio engine, standalone applica
 
 Verified locally on the current working tree:
 
-- LibTorch build and CTest: 7/7 passing.
-- LibTorch-disabled build and CTest: 5/5 passing.
+- LibTorch build and CTest: 9/9 passing.
+- LibTorch-disabled build and CTest: 7/7 passing.
 - VST3 and AU bundles build and pass strict ad-hoc signature verification.
 - A generated RAVE-like TorchScript fixture verifies plugin model-path and latent recall.
 
@@ -21,7 +21,7 @@ Deterministic tests qualify lifecycle behavior, exact transport timing, variable
 
 ## Known priority gaps
 
-1. `InferenceWorker::prepare` resets latent controls, so device/host reprepare can lose direct latent values.
+1. Official icon sourcing, packaging, and visual verification remain deferred to RAVE-06.
 2. Real DAW compatibility, soak reliability, intrinsic model latency, and target-machine performance remain RAVE-05 qualification work. Hardware, DAW, soak, and visual observation are not claimed by the deterministic RAVE-04 checks.
 
 ## Phases

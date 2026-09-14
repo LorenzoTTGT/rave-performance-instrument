@@ -874,10 +874,16 @@ void testLongSysExCallbackAllocationAndMailboxInterleaving()
     juce::AudioBuffer<float> audio(2, 8);
     audio.clear();
 
-    std::vector<std::uint8_t> payload(65536, 0x55);
+    // MidiBuffer encodes event size in 16 bits. Use a comfortably
+    // representable event that still exceeds MidiMessage's inline storage.
+    std::array<std::uint8_t, 1024> sysExBytes {};
+    sysExBytes.fill(0x55);
+    sysExBytes.front() = 0xf0;
+    sysExBytes.back() = 0xf7;
     juce::MidiBuffer sysEx;
-    sysEx.addEvent(juce::MidiMessage::createSysExMessage(payload.data(),
-                                                         static_cast<int>(payload.size())), 0);
+    require(sysEx.addEvent(sysExBytes.data(), static_cast<int>(sysExBytes.size()), 0),
+            "representable long SysEx insertion succeeds");
+    require(sysEx.getNumEvents() == 1, "allocation audit processes one actual SysEx event");
     allocationAudit::count.store(0, std::memory_order_relaxed);
     allocationAudit::enabled.store(true, std::memory_order_release);
     processor.processBlock(audio, sysEx);
@@ -886,6 +892,41 @@ void testLongSysExCallbackAllocationAndMailboxInterleaving()
             "long SysEx is inspected without callback allocation");
 
     processor.beginMidiLearn(1);
+    const auto sendMalformed = [&](const std::uint8_t* bytes, const int byteCount) {
+        processor.applyRawMidiEventForTesting(bytes, byteCount);
+        processor.publishPendingMidiParameterChanges();
+        require(processor.isLearningMidiTarget(1),
+                "malformed raw event does not consume MIDI learn");
+        require(processor.midiControllerForTarget(1) == -1,
+                "malformed raw event does not change mapping");
+        auto& macro = processor.macroParameterReference(0);
+        require(std::abs(macro.convertFrom0to1(macro.getValue())) < 0.001f,
+                "malformed raw event does not update control mailbox");
+    };
+    const std::array<std::uint8_t, 2> shortCc {0xb0, 74};
+    const std::array<std::uint8_t, 4> longCc {0xb0, 74, 64, 0};
+    const std::array<std::uint8_t, 3> wrongStatus {0x90, 74, 64};
+    const std::array<std::uint8_t, 3> highController {0xb0, 0x80, 64};
+    const std::array<std::uint8_t, 3> highValue {0xbf, 74, 0x80};
+    sendMalformed(shortCc.data(), static_cast<int>(shortCc.size()));
+    sendMalformed(longCc.data(), static_cast<int>(longCc.size()));
+    sendMalformed(wrongStatus.data(), static_cast<int>(wrongStatus.size()));
+    sendMalformed(highController.data(), static_cast<int>(highController.size()));
+    sendMalformed(highValue.data(), static_cast<int>(highValue.size()));
+
+    const std::array<std::uint8_t, 3> validCc {0xbf, 74, 64};
+    juce::MidiBuffer valid;
+    require(valid.addEvent(validCc.data(), static_cast<int>(validCc.size()), 0),
+            "valid raw CC insertion succeeds");
+    processor.processBlock(audio, valid);
+    require(!processor.isLearningMidiTarget(1) && processor.midiControllerForTarget(1) == 74,
+            "valid CC consumes learn only after malformed events were ignored");
+    processor.publishPendingMidiParameterChanges();
+    require(std::abs(processor.macroParameterReference(0).convertFrom0to1(
+                         processor.macroParameterReference(0).getValue())
+                     - (-4.0f + 8.0f * 64.0f / 127.0f)) < 0.011f,
+            "valid CC updates learned target");
+
     juce::MidiBuffer first;
     first.addEvent(juce::MidiMessage::controllerEvent(1, 74, 10), 0);
     processor.processBlock(audio, first);

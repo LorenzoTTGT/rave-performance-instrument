@@ -76,6 +76,9 @@ public:
     // Message-thread handoff for MIDI changes captured by processBlock().
     // Coalesces each parameter to its newest callback value.
     void publishPendingMidiParameterChanges();
+    // Test seam exercising the exact raw parser used by applyMidi; required
+    // because MidiBuffer canonicalizes malformed byte sequences on insertion.
+    void applyRawMidiEventForTesting(const std::uint8_t* data, int byteCount) noexcept;
 
     // Surfaces engine lifecycle transitions (incompatible reprepare, failing
     // checked reset/start, release/device stop) in the visible status instead
@@ -95,6 +98,7 @@ public:
 private:
     void timerCallback() override;
     void applyMidi(juce::MidiBuffer& midiMessages) noexcept;
+    void applyRawMidiEvent(const std::uint8_t* data, int byteCount) noexcept;
     void activateModel(rave::ModelBackendPtr backend,
                        const juce::File& modelFile,
                        const std::vector<float>& restoredLatents,
