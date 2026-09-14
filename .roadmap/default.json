@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 3,
-    "revision": 38,
+    "revision": 39,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -239,9 +239,10 @@
           "owner": "pi-root",
           "branch": "main",
           "worktree": "canonical",
-          "status": "claimed",
+          "status": "released",
           "claimedAt": "2026-09-14T12:19:15.096Z",
-          "updatedAt": "2026-09-14T12:19:15.096Z"
+          "updatedAt": "2026-09-14T15:21:01.882Z",
+          "reason": "Checkpointed the automated RAVE-05 qualification harness to origin/main at 7029a5ef6874392568635a2158f1cf5fb6d6ee8d. Remaining 2-hour soak and manual host/device qualification will continue later."
         }
       },
       {
@@ -299,10 +300,11 @@
         }
       }
     ],
-    "updatedAt": "2026-09-14T12:19:21.601Z",
+    "updatedAt": "2026-09-14T15:21:01.882Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "c92e23227b3d0442c5ca40dd125a22044ebecebeedd0dd41e0b3ed0bcc022467",
     "b68e1a5ba67b9ef1f5cd9048588b860919be8d8e8b92aa5c92b7ca854ff57668",
     "c603b4ed8fce9d47c6a85e2afcc273404bfa861764c63acc5b65b52a866f8b03",
     "1f7cd5cbc89839e414a2920204ec0472f7cafaa83ee1100a9b77d7fb1a8e63fd",
@@ -314,5 +316,5 @@
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "c92e23227b3d0442c5ca40dd125a22044ebecebeedd0dd41e0b3ed0bcc022467"
+  "hash": "163e1387555ad24466e57d27099374531372fe82a885b1de577e9bd9194bb177"
 }
