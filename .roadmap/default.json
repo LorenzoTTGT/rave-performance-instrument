@@ -3,7 +3,7 @@
   "roadmapId": "default",
   "state": {
     "version": 3,
-    "revision": 39,
+    "revision": 42,
     "title": "Dependable RAVE Performance Instrument",
     "phases": [
       {
@@ -240,10 +240,11 @@
           "branch": "main",
           "worktree": "canonical",
           "status": "released",
-          "claimedAt": "2026-09-14T12:19:15.096Z",
-          "updatedAt": "2026-09-14T15:21:01.882Z",
-          "reason": "Checkpointed the automated RAVE-05 qualification harness to origin/main at 7029a5ef6874392568635a2158f1cf5fb6d6ee8d. Remaining 2-hour soak and manual host/device qualification will continue later."
-        }
+          "claimedAt": "2026-09-25T21:18:46.724Z",
+          "updatedAt": "2026-09-25T21:55:36.765Z",
+          "reason": "Final qualification is blocked pending a quiet machine window and owner-performed Logic/REAPER/Ableton/standalone audio, device, MIDI, and audible observations. Automated matrix evidence is preserved under /tmp/rave05-final-evidence-0e71143 for this machine session."
+        },
+        "workBlock": "Why: On clean commit 0e71143d18857d93237438e09565589f4f56cd66, the LibTorch build and 11/11 tests passed, the no-LibTorch build and 8/8 tests passed, icon and strict VST3/AU signature checks passed, but the clean smoke qualification failed under abnormal machine contention (load1 24.8; production inference p99 371.4 ms vs 38.4 ms; 7 deadline misses and 7 late results). The required Logic Pro, REAPER, Ableton Live, and standalone audible/device/MIDI observations also require owner interaction that this agent cannot automate. Running the two-hour soak under the current load would not produce valid qualification evidence.\nNext: The project owner must provide a quiet qualification window and perform or supervise the manual host/standalone checklist in docs/RAVE05_QUALIFICATION_REPORT_TEMPLATE.md. Pi will then rerun clean smoke and benchmark, run the two-hour soak, capture the owner-observed host/device results, repeat the final matrix if source changes, and complete review/delivery."
       },
       {
         "id": "rave-06-official-icon",
@@ -300,10 +301,11 @@
         }
       }
     ],
-    "updatedAt": "2026-09-14T15:21:01.882Z",
+    "updatedAt": "2026-09-25T21:55:36.765Z",
     "sourceRoadmap": "ROADMAP.md"
   },
   "ancestors": [
+    "163e1387555ad24466e57d27099374531372fe82a885b1de577e9bd9194bb177",
     "c92e23227b3d0442c5ca40dd125a22044ebecebeedd0dd41e0b3ed0bcc022467",
     "b68e1a5ba67b9ef1f5cd9048588b860919be8d8e8b92aa5c92b7ca854ff57668",
     "c603b4ed8fce9d47c6a85e2afcc273404bfa861764c63acc5b65b52a866f8b03",
@@ -316,5 +318,5 @@
     "68a9f0c7a933a9ee17b5c4c8a3df71f66de7c6e575633423e17d29d13ee70143",
     "12cb0bee604efbfab501e27103dd948fde0df25f00e1f144bc5c432c38876664"
   ],
-  "hash": "163e1387555ad24466e57d27099374531372fe82a885b1de577e9bd9194bb177"
+  "hash": "94f2a309e211667b8e2d3eb8d03d8fd65a85412564ed288dc7669152c1f52fb2"
 }
