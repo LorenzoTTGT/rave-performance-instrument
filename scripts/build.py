@@ -76,6 +76,10 @@ def main():
                 str(Path(torch.__file__).parent / "lib") + os.pathsep + env["PATH"]
             )
     if args.juce_source:
+        if platform.system() == "Darwin":
+            from patch_juce_macos15 import patch
+
+            patch(args.juce_source.resolve())
         command.append(
             "-DFETCHCONTENT_SOURCE_DIR_JUCE=" + str(args.juce_source.resolve())
         )

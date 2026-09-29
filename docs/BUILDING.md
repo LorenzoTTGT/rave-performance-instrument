@@ -10,6 +10,11 @@ Install CPU PyTorch in the selected Python environment before building. Tested v
 
 Install repository tooling with `python -m pip install -r requirements-dev.txt` and `npm ci`. Linux packaging requires the pinned `patchelf`; icon regeneration requires `rsvg-convert` (librsvg). On Windows use `--icon-assets-only` to verify committed icon assets; Linux/macOS perform full regeneration. The reduced Windows check is reported explicitly.
 
+For macOS 15 SDK builds, the wrapper applies the repository's small JUCE 7.0.9
+snapshot patch to the fetched dependency or supplied JUCE source checkout before
+configuration. It uses AppKit's content-view snapshot where macOS 15 removed the
+CoreGraphics window snapshot API; on older SDKs JUCE's original path remains.
+
 ## Build and test
 
 ```sh

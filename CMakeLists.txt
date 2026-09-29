@@ -31,11 +31,22 @@ if(RAVE_USE_SYSTEM_JUCE AND NOT CMAKE_DISABLE_FIND_PACKAGE_JUCE)
   find_package(JUCE CONFIG REQUIRED)
 else()
   include(FetchContent)
+  if(APPLE)
+    find_package(
+      Python3
+      COMPONENTS Interpreter
+      REQUIRED)
+    set(RAVE_JUCE_PATCH_COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/patch_juce_macos15.py"
+        <SOURCE_DIR>)
+  endif()
   FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
     GIT_TAG 7.0.9
-    GIT_SHALLOW TRUE)
+    GIT_SHALLOW TRUE
+    PATCH_COMMAND ${RAVE_JUCE_PATCH_COMMAND})
   FetchContent_MakeAvailable(JUCE)
 endif()
 
