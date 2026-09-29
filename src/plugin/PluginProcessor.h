@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -45,7 +46,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
+    double getTailLengthSeconds() const override { return std::numeric_limits<double>::infinity(); }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -56,6 +57,10 @@ public:
     void getStateInformation(juce::MemoryBlock& destinationData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
+    [[nodiscard]] juce::RangedAudioParameter &generatorParameter(std::size_t index) const
+    {
+        return *generatorParameters.at(index);
+    }
     [[nodiscard]] juce::RangedAudioParameter& dryWetParameterReference() const;
     [[nodiscard]] juce::RangedAudioParameter& macroParameterReference(std::size_t index) const;
     void beginMidiLearn(std::size_t targetIndex) noexcept;
@@ -129,6 +134,7 @@ private:
     rave::RaveAudioEngine engine;
     juce::AudioParameterFloat* dryWetParameter = nullptr;
     std::array<juce::AudioParameterFloat*, macroCount> macroParameters {};
+    std::array<juce::AudioParameterFloat *, 3> generatorParameters{};
     std::array<std::atomic<int>, midiTargetCount> midiControllers;
     std::atomic<int> learningMidiTarget { -1 };
     std::array<std::atomic<float>, midiTargetCount> midiLatestValues {};

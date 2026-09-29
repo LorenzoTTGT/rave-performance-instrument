@@ -29,6 +29,8 @@ public:
     InferenceWorker& operator=(const InferenceWorker&) = delete;
 
     void setBackend(ModelBackendPtr newBackend);
+    void setGenerator(bool enabled, float depth, float rate) noexcept;
+    [[nodiscard]] bool isGenerating() const noexcept { return generating.load(std::memory_order_relaxed); }
 
     // Only meaningful while the worker is stopped (message-thread ownership);
     // used to snapshot the active backend for transactional replacement.
@@ -72,10 +74,16 @@ public:
     // worker thread is constructed so tests can exercise thread-start failure
     // containment deterministically. Production never sets it.
     std::function<void()> threadStartHookForTesting;
+    // Configure only while stopped. Non-throwing test observer invoked on the
+    // worker after a finite output has been queued or its queue drop recorded.
+    std::function<void()> outputHandledHookForTesting;
 
 private:
     void run();
 
+    std::atomic<bool> generating{false};
+    std::atomic<float> motionDepth{0.5f}, motionRate{0.1f};
+    double preparedRate = 48000.0;
     ModelBackendPtr backend;
     AudioBlockQueue inputQueue;
     AudioBlockQueue outputQueue;

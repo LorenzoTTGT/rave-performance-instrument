@@ -240,6 +240,16 @@ void StandaloneSessionState::setAudioSetup(juce::String type,
     identity.audioInputId = input.substring(0, static_cast<int>(maximumStringLength));
 }
 
+void StandaloneSessionState::setGenerator(bool enabled, float depth, float rate)
+{
+    if (!finite(depth) || !finite(rate))
+        return;
+    const juce::ScopedLock lock(controlLock);
+    identity.generate = enabled;
+    identity.motionDepth = std::clamp(depth, 0.0f, 2.0f);
+    identity.motionRate = std::clamp(rate, 0.01f, 2.0f);
+}
+
 StandaloneSessionState::Snapshot StandaloneSessionState::snapshot() const
 {
     const juce::ScopedLock lock(controlLock);
@@ -269,14 +279,14 @@ StandaloneSessionState::Snapshot StandaloneSessionState::snapshot() const
 
 bool StandaloneSessionState::restore(const Snapshot& value)
 {
-    if (value.latents.size() > maximumLatents
-        || value.midiControllers.size() != value.latents.size() + 1
-        || !finite(value.dryWet)
-        || static_cast<std::size_t>(value.modelPath.length()) > maximumStringLength
-        || static_cast<std::size_t>(value.midiInputId.length()) > maximumStringLength
-        || static_cast<std::size_t>(value.audioDeviceType.length()) > maximumStringLength
-        || static_cast<std::size_t>(value.audioOutputId.length()) > maximumStringLength
-        || static_cast<std::size_t>(value.audioInputId.length()) > maximumStringLength)
+    if (value.latents.size() > maximumLatents || value.midiControllers.size() != value.latents.size() + 1 ||
+        !finite(value.dryWet) || !finite(value.motionDepth) || !finite(value.motionRate) || value.motionDepth < 0.0f ||
+        value.motionDepth > 2.0f || value.motionRate < 0.01f || value.motionRate > 2.0f ||
+        static_cast<std::size_t>(value.modelPath.length()) > maximumStringLength ||
+        static_cast<std::size_t>(value.midiInputId.length()) > maximumStringLength ||
+        static_cast<std::size_t>(value.audioDeviceType.length()) > maximumStringLength ||
+        static_cast<std::size_t>(value.audioOutputId.length()) > maximumStringLength ||
+        static_cast<std::size_t>(value.audioInputId.length()) > maximumStringLength)
         return false;
 
     for (const auto latentValue : value.latents)
@@ -333,6 +343,9 @@ bool StandaloneSessionState::serialize(juce::MemoryBlock& output) const
     xml.setAttribute("output", state.audioOutputId);
     xml.setAttribute("input", state.audioInputId);
     xml.setAttribute("dryWet", state.dryWet);
+    xml.setAttribute("generate", state.generate);
+    xml.setAttribute("motionDepth", state.motionDepth);
+    xml.setAttribute("motionRate", state.motionRate);
     xml.setAttribute("count", static_cast<int>(state.latents.size()));
     xml.setAttribute("cc0", state.midiControllers[0]);
     for (std::size_t index = 0; index < state.latents.size(); ++index)
@@ -395,6 +408,9 @@ bool StandaloneSessionState::deserialize(const void* data, const std::size_t byt
     state.audioOutputId = xml->getStringAttribute("output");
     state.audioInputId = xml->getStringAttribute("input");
     state.dryWet = static_cast<float>(xml->getDoubleAttribute("dryWet"));
+    state.generate = xml->getBoolAttribute("generate", false);
+    state.motionDepth = static_cast<float>(xml->getDoubleAttribute("motionDepth", 0.5));
+    state.motionRate = static_cast<float>(xml->getDoubleAttribute("motionRate", 0.1));
 
     const auto parsedCount = xml->getIntAttribute("count", -1);
     if (parsedCount < 0 || parsedCount > static_cast<int>(maximumLatents))

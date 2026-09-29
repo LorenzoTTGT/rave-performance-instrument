@@ -1,0 +1,8 @@
+build/
+node_modules/
+.roadmap/
+.qualification-models/
+assets/
+package-lock.json
+assets/models/*MODEL-CARD.md
+assets/models/CC-BY-NC-4.0.html

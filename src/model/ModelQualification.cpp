@@ -78,6 +78,17 @@ std::string qualifyModelBackend(ModelBackend& backend, const ModelRuntimeConfigu
                     return "Model warm-up produced non-finite output at the active runtime configuration";
             }
         }
+        // Compile and validate the decoder-only path before the realtime worker
+        // can select it. Generic forward-only backends retain their old contract.
+        if (backend.supportsGeneration())
+            for (int block = 0; block < 8; ++block)
+            {
+                if (!backend.generate(latent, output))
+                    return "Model decoder warm-up failed";
+                for (const auto sample : output)
+                    if (!std::isfinite(sample))
+                        return "Model decoder produced non-finite audio";
+            }
     }
     catch (const std::exception& exception)
     {

@@ -69,6 +69,7 @@ struct TorchScriptBackend::Impl
     std::unique_ptr<torch::jit::Module> module;
     double preparedSampleRate = 0.0;
     std::size_t maximumBlockSize = 0;
+    std::size_t latentFramesRatio = 0;
     std::size_t latentDimensions = 0;
     std::size_t inputChannels = 1;
     std::size_t outputChannels = 1;
@@ -226,10 +227,22 @@ bool TorchScriptBackend::load(const std::string& modelPath, std::string& errorMe
             exportedSampleRate = static_cast<int>(declaredRate);
         }
 
+        if (exportedSampleRate <= 0 && candidate->hasattr("sr"))
+        {
+            const auto rate = candidate->attr("sr");
+            if (!rate.isInt() || rate.toInt() <= 0 || rate.toInt() > maximumPlausibleSampleRate)
+            {
+                errorMessage = "RAVE sr metadata is malformed";
+                return false;
+            }
+            exportedSampleRate = static_cast<int>(rate.toInt());
+        }
         impl->module = std::move(candidate);
         impl->inputChannels = inputChannels;
         impl->outputChannels = outputChannels;
         impl->latentDimensions = latentDimensions;
+        impl->latentFramesRatio =
+            supportsLatentProcessing ? static_cast<std::size_t>(decodeParameters.parameters[1]) : 0;
         impl->supportsLatentProcessing = supportsLatentProcessing;
         impl->exportedSampleRate = exportedSampleRate;
         impl->sampleRateMatches = true;
@@ -309,6 +322,33 @@ std::size_t TorchScriptBackend::inputChannelCount() const noexcept
 std::size_t TorchScriptBackend::outputChannelCount() const noexcept
 {
     return impl->outputChannels;
+}
+
+bool TorchScriptBackend::supportsGeneration() const noexcept { return impl->supportsLatentProcessing; }
+
+bool TorchScriptBackend::generate(const std::span<const float> controls, const std::span<float> output)
+{
+    if (!impl->module || !impl->supportsLatentProcessing || !impl->sampleRateMatches ||
+        controls.size() != impl->latentDimensions || output.empty() || impl->latentFramesRatio == 0 ||
+        output.size() % impl->latentFramesRatio != 0 || output.size() > impl->maximumBlockSize)
+        return false;
+    try
+    {
+        torch::InferenceMode inferenceMode;
+        auto latent = torch::from_blob(const_cast<float *>(controls.data()),
+                                       {1, static_cast<std::int64_t>(controls.size()), 1}, torch::kFloat32)
+                          .repeat({1, 1, static_cast<std::int64_t>(output.size() / impl->latentFramesRatio)});
+        auto result = impl->module->get_method("decode")({latent}).toTensor().to(torch::kCPU).contiguous();
+        if (result.scalar_type() != torch::kFloat32 || result.dim() != 3 || result.size(0) != 1 ||
+            result.size(1) != 1 || result.size(2) != static_cast<std::int64_t>(output.size()))
+            return false;
+        std::copy_n(result.data_ptr<float>(), output.size(), output.data());
+        return true;
+    }
+    catch (const std::exception &)
+    {
+        return false;
+    }
 }
 
 bool TorchScriptBackend::process(const std::span<const float> input,

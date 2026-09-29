@@ -25,6 +25,9 @@ public:
     [[nodiscard]] std::size_t inputChannelCount() const noexcept;
     [[nodiscard]] std::size_t outputChannelCount() const noexcept;
 
+    [[nodiscard]] bool supportsGeneration() const noexcept override;
+    bool generate(std::span<const float> latentControls, std::span<float> output) override;
+
     bool process(std::span<const float> input,
                  std::span<const float> latentControls,
                  std::span<float> output) override;

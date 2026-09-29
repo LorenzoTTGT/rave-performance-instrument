@@ -1,11 +1,19 @@
+#if defined(RAVE_UI_TEST)
+#include <juce_audio_utils/juce_audio_utils.h>
+#include <juce_gui_extra/juce_gui_extra.h>
+#else
 #include <JuceHeader.h>
+#endif
 #include <RaveIconAssets.h>
 
+#include "app/StandalonePresetModelCoordinator.h"
 #include "engine/LifecycleStatusText.h"
 #include "engine/RaveAudioEngine.h"
-#include "app/StandalonePresetModelCoordinator.h"
 #include "state/LatestRequestGeneration.h"
 #include "state/StandaloneSessionState.h"
+#include "ui/FactoryModels.h"
+#include "ui/GeneratorControls.h"
+#include "ui/PerformanceTheme.h"
 
 #if RAVE_HAS_LIBTORCH
 #include "model/BackgroundModelLoader.h"
@@ -30,8 +38,21 @@ class MainComponent final : public juce::Component,
                             private juce::MidiInputCallback
 {
 public:
-    MainComponent() : deviceSelector(deviceManager, 0, 2, 0, 2, false, false, true, false)
+    explicit MainComponent(bool connectDevices = true)
+        : deviceSelector(deviceManager, 0, 2, 0, 2, false, false, true, false)
     {
+        setLookAndFeel(&theme);
+        setOpaque(true);
+        addAndMakeVisible(generator);
+        const auto updateGenerator = [this]
+        {
+            session.setGenerator(generator.enabled.getToggleState(), static_cast<float>(generator.depth.getValue()),
+                                 static_cast<float>(generator.rate.getValue()));
+            syncControlsAndEngine();
+        };
+        generator.enabled.onClick = updateGenerator;
+        generator.depth.onValueChange = updateGenerator;
+        generator.rate.onValueChange = updateGenerator;
         icon = juce::Drawable::createFromImageData(RaveIconAssets::raveinstrumenticon_svg,
                                                    RaveIconAssets::raveinstrumenticon_svgSize);
         if (icon != nullptr)
@@ -41,41 +62,61 @@ public:
             addAndMakeVisible(*icon);
         }
 
-        title.setText("RAVE Performance Instrument", juce::dontSendNotification);
-        title.setJustificationType(juce::Justification::centred);
-        title.setFont(juce::Font(24.0f, juce::Font::bold));
+        title.setText("RAVE", juce::dontSendNotification);
+        title.setJustificationType(juce::Justification::centredLeft);
+        title.setFont(juce::Font(27.0f, juce::Font::bold));
         title.setAccessible(true);
         title.setTitle("RAVE Performance Instrument");
         addAndMakeVisible(title);
 
         status.setText(utf8("Audio pass-through ready — no model loaded"),
                        juce::dontSendNotification);
-        status.setJustificationType(juce::Justification::centred);
+        status.setJustificationType(juce::Justification::centredLeft);
+        status.setFont(juce::Font(12.0f));
+        status.setMinimumHorizontalScale(1.0f);
+        status.setColour(juce::Label::textColourId, rave::ui::muted);
         status.setAccessible(true);
         status.setTitle("Model and audio status");
         addAndMakeVisible(status);
 
-        configureButton(loadModelButton, "Load TorchScript Model…", "Choose a TorchScript model");
-        loadModelButton.onClick = [this] { chooseModel(false); };
+        configureButton(loadModelButton, utf8("Load model…"), "Choose a TorchScript model");
+        loadModelButton.setColour(juce::TextButton::buttonColourId, rave::ui::accent);
+        loadModelButton.setColour(juce::TextButton::textColourOffId, rave::ui::background);
+        loadModelButton.onClick = [this]
+        {
+#if RAVE_HAS_LIBTORCH
+            const auto safe = juce::Component::SafePointer<MainComponent>(this);
+            rave::ui::showFactoryModels(
+                loadModelButton,
+                [safe](juce::File file)
+                {
+                    if (safe != nullptr)
+                        safe->requestModel(file, false);
+                },
+                [safe]
+                {
+                    if (safe != nullptr)
+                        safe->chooseModel(false);
+                });
+#endif
+        };
 #if !RAVE_HAS_LIBTORCH
         loadModelButton.setButtonText("LibTorch backend unavailable");
         loadModelButton.setEnabled(false);
 #endif
 
-        configureButton(relinkButton, "Relink Missing Model…",
-                        "Choose a replacement for the missing preset model");
+        configureButton(relinkButton, utf8("Relink…"), "Choose a replacement for the missing preset model");
         relinkButton.onClick = [this] { chooseModel(true); };
         relinkButton.setEnabled(false);
 
-        configureButton(savePresetButton, "Save Preset…",
-                        "Save a RAVE standalone .ravepreset file");
+        configureButton(savePresetButton, "Save preset", "Save a RAVE standalone .ravepreset file");
         savePresetButton.onClick = [this] { savePreset(); };
-        configureButton(loadPresetButton, "Load Preset…",
-                        "Load a RAVE standalone .ravepreset file");
+        configureButton(loadPresetButton, "Open preset", "Load a RAVE standalone .ravepreset file");
         loadPresetButton.onClick = [this] { loadPreset(); };
 
         dryWet.setRange(0.0, 1.0, 0.01);
-        dryWet.setTextValueSuffix(" wet");
+        rave::ui::configureMix(dryWet);
+        dryWet.setValue(session.dryWet(), juce::dontSendNotification);
         dryWet.setAccessible(true);
         dryWet.setTitle("Dry wet mix");
         dryWet.setTooltip("Amount of processed audio. MIDI learn is available "
@@ -86,8 +127,10 @@ public:
             engine.setDryWet(session.dryWet());
         };
         addAndMakeVisible(dryWet);
-        dryWetLabel.setText("Dry / Wet", juce::dontSendNotification);
-        dryWetLabel.attachToComponent(&dryWet, true);
+        dryWetLabel.setText("DRY / WET", juce::dontSendNotification);
+        dryWetLabel.setJustificationType(juce::Justification::centred);
+        dryWetLabel.setFont(juce::Font(11.0f, juce::Font::bold));
+        dryWetLabel.setColour(juce::Label::textColourId, rave::ui::muted);
         addAndMakeVisible(dryWetLabel);
         configureButton(dryWetLearnButton, "MIDI Learn", "Learn a MIDI CC for dry/wet");
         dryWetLearnButton.onClick = [this]
@@ -112,7 +155,27 @@ public:
 
         deviceSelector.setAccessible(true);
         deviceSelector.setTitle("Audio input and output device settings");
-        addAndMakeVisible(deviceSelector);
+        settingsContent.addAndMakeVisible(deviceSelector);
+        settingsContent.addAndMakeVisible(midiInputLabel);
+        settingsContent.addAndMakeVisible(midiInput);
+        settingsContent.addAndMakeVisible(midiStatus);
+        settingsViewport.setViewedComponent(&settingsContent, false);
+        settingsViewport.setScrollBarsShown(true, false);
+        addChildComponent(settingsViewport);
+        configureButton(audioSettingsButton, "Audio", "Show audio devices and MIDI input settings");
+        audioSettingsButton.setClickingTogglesState(true);
+        audioSettingsButton.onClick = [this]
+        {
+            resized();
+            repaint();
+        };
+        configureButton(midiModeButton, "MIDI", "Show or hide MIDI learn assignments");
+        midiModeButton.setClickingTogglesState(true);
+        midiModeButton.onClick = [this]
+        {
+            resized();
+            repaint();
+        };
 
         latentViewport.setViewedComponent(&latentContent, false);
         latentViewport.setScrollBarsShown(true, false);
@@ -120,14 +183,17 @@ public:
         latentViewport.setTitle("Latent controls");
         addAndMakeVisible(latentViewport);
 
-        const auto error = deviceManager.initialiseWithDefaultDevices(2, 2);
-        if (error.isNotEmpty())
-            status.setText("Audio device error: " + error, juce::dontSendNotification);
-        else
-            deviceManager.addAudioCallback(&engine);
-        syncAudioIdentityFromManager();
-        refreshMidiInputs();
-        setSize(760, 620);
+        if (connectDevices)
+        {
+            const auto error = deviceManager.initialiseWithDefaultDevices(2, 2);
+            if (error.isNotEmpty())
+                status.setText("Audio device error: " + error, juce::dontSendNotification);
+            else
+                deviceManager.addAudioCallback(&engine);
+            syncAudioIdentityFromManager();
+            refreshMidiInputs();
+        }
+        setSize(700, 480);
         startTimerHz(20);
     }
 
@@ -137,44 +203,67 @@ public:
         disableSelectedMidiInput();
         fileChooser.reset();
         deviceManager.removeAudioCallback(&engine);
+        setLookAndFeel(nullptr);
+    }
+
+    void paint(juce::Graphics &g) override
+    {
+        g.fillAll(rave::ui::background);
+        const rave::ui::SurfaceLayout layout(getLocalBounds());
+        rave::ui::drawPanel(g, layout.mix);
+        rave::ui::drawPanel(g, layout.controls);
+        auto subtitle = layout.header.withTrimmedLeft(140).withTrimmedRight(156);
+        rave::ui::drawCaption(g, "NEURAL AUDIO INSTRUMENT", subtitle);
+        rave::ui::drawCaption(g, audioSettingsButton.getToggleState() ? "AUDIO & MIDI INPUT" : "LATENT SPACE",
+                              layout.controls.reduced(16).removeFromTop(18));
+        if (latentSliders.empty() && !audioSettingsButton.getToggleState())
+            rave::ui::drawEmptyState(g, layout.controls.withTrimmedTop(116));
+        g.setColour(rave::ui::border);
+        g.drawHorizontalLine(layout.footer.getY(), 16.0f, static_cast<float>(getWidth() - 16));
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced(18);
-        auto titleArea = area.removeFromTop(34);
+        const rave::ui::SurfaceLayout layout(getLocalBounds());
+        auto header = layout.header;
         if (icon != nullptr)
-            icon->setBounds(titleArea.removeFromLeft(34).reduced(2));
-        title.setBounds(titleArea);
-        status.setBounds(area.removeFromTop(28));
-        area.removeFromTop(6);
-
-        auto modelRow = area.removeFromTop(30);
-        loadModelButton.setBounds(modelRow.removeFromLeft(modelRow.getWidth() / 2).reduced(2, 0));
-        relinkButton.setBounds(modelRow.reduced(2, 0));
-        auto presetRow = area.removeFromTop(30);
-        savePresetButton.setBounds(
-            presetRow.removeFromLeft(presetRow.getWidth() / 2).reduced(2, 0));
-        loadPresetButton.setBounds(presetRow.reduced(2, 0));
-        area.removeFromTop(6);
-
-        auto midiRow = area.removeFromTop(28);
-        midiInputLabel.setBounds(midiRow.removeFromLeft(78));
-        midiStatus.setBounds(midiRow.removeFromRight(std::max(120, midiRow.getWidth() / 3)));
-        midiInput.setBounds(midiRow.reduced(2, 0));
-
-        auto mixRow = area.removeFromTop(36);
-        dryWetLearnButton.setBounds(mixRow.removeFromRight(96));
-        mixRow.removeFromRight(4);
-        dryWetClearButton.setBounds(mixRow.removeFromRight(52));
-        mixRow.removeFromRight(8);
-        dryWet.setBounds(mixRow.reduced(82, 0));
-        area.removeFromTop(6);
-
-        const auto settingsHeight = std::min(150, std::max(112, area.getHeight() / 3));
-        deviceSelector.setBounds(area.removeFromTop(settingsHeight));
-        area.removeFromTop(6);
-        latentViewport.setBounds(area);
+            icon->setTransformToFit(header.removeFromLeft(36).reduced(2).toFloat(), juce::RectanglePlacement::centred);
+        header.removeFromLeft(8);
+        title.setBounds(header.removeFromLeft(94));
+        audioSettingsButton.setBounds(header.removeFromRight(70).withSizeKeepingCentre(70, 30));
+        header.removeFromRight(8);
+        midiModeButton.setBounds(header.removeFromRight(70).withSizeKeepingCentre(70, 30));
+        auto toolbar = layout.toolbar;
+        loadModelButton.setBounds(toolbar.removeFromLeft(152));
+        toolbar.removeFromLeft(8);
+        relinkButton.setBounds(toolbar.removeFromLeft(80));
+        savePresetButton.setBounds(toolbar.removeFromRight(100));
+        toolbar.removeFromRight(8);
+        loadPresetButton.setBounds(toolbar.removeFromRight(100));
+        status.setBounds(layout.footer.reduced(0, 4));
+        auto mix = layout.mix.reduced(12);
+        dryWetLabel.setBounds(mix.removeFromTop(26));
+        dryWet.setBounds(mix.removeFromTop(146));
+        const bool mapping = midiModeButton.getToggleState();
+        dryWetLearnButton.setVisible(mapping);
+        dryWetClearButton.setVisible(mapping);
+        dryWetLearnButton.setBounds(mix.removeFromTop(26));
+        mix.removeFromTop(4);
+        dryWetClearButton.setBounds(mix.removeFromTop(24));
+        const auto content = layout.controls.reduced(12).withTrimmedTop(24);
+        latentViewport.setVisible(!audioSettingsButton.getToggleState());
+        auto latentArea = content;
+        generator.setVisible(!audioSettingsButton.getToggleState());
+        generator.setBounds(latentArea.removeFromTop(84));
+        latentViewport.setBounds(latentArea);
+        settingsViewport.setVisible(audioSettingsButton.getToggleState());
+        settingsViewport.setBounds(content);
+        const int settingsWidth = std::max(1, content.getWidth() - 12);
+        settingsContent.setSize(settingsWidth, 360);
+        midiInputLabel.setBounds(4, 4, 78, 26);
+        midiInput.setBounds(84, 4, settingsWidth - 88, 26);
+        midiStatus.setBounds(4, 36, settingsWidth - 8, 24);
+        deviceSelector.setBounds(0, 70, settingsWidth, 280);
         layoutLatentControls();
     }
 
@@ -217,10 +306,13 @@ private:
         {
             auto label = std::make_unique<juce::Label>();
             label->setText("Latent " + juce::String(index + 1), juce::dontSendNotification);
-            label->setJustificationType(juce::Justification::centredLeft);
+            label->setJustificationType(juce::Justification::centred);
+            label->setFont(juce::Font(12.0f));
+            label->setColour(juce::Label::textColourId, rave::ui::muted);
             latentContent.addAndMakeVisible(*label);
             auto slider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal,
                                                          juce::Slider::TextBoxRight);
+            rave::ui::configureKnob(*slider, "Latent " + juce::String(index + 1));
             slider->setRange(-4.0, 4.0, 0.01);
             slider->setValue(session.latent(index), juce::dontSendNotification);
             slider->setDoubleClickReturnValue(true, 0.0);
@@ -257,19 +349,25 @@ private:
 
     void layoutLatentControls()
     {
-        constexpr int rowHeight = 42;
-        const auto contentWidth = std::max(420, latentViewport.getWidth() - 14);
-        latentContent.setSize(contentWidth,
-                              std::max(latentViewport.getHeight(),
-                                       static_cast<int>(latentSliders.size()) * rowHeight));
+        const bool mapping = midiModeButton.getToggleState();
+        const int rowHeight = mapping ? 176 : 116;
+        const auto contentWidth = std::max(1, latentViewport.getWidth() - 12);
+        const int columns = std::max(1, contentWidth / 100);
+        const int cellWidth = contentWidth / columns;
+        const int rows = (static_cast<int>(latentSliders.size()) + columns - 1) / columns;
+        latentContent.setSize(contentWidth, std::max(latentViewport.getHeight(), rows * rowHeight));
         for (std::size_t index = 0; index < latentSliders.size(); ++index)
         {
-            const auto y = static_cast<int>(index) * rowHeight;
-            latentLabels[index]->setBounds(0, y, 76, rowHeight);
-            latentClearButtons[index]->setBounds(contentWidth - 50, y + 7, 48, rowHeight - 14);
-            latentLearnButtons[index]->setBounds(contentWidth - 148, y + 7, 94, rowHeight - 14);
-            latentSliders[index]->setBounds(80, y + 3, contentWidth - 232, rowHeight - 6);
+            const int x = (static_cast<int>(index) % columns) * cellWidth;
+            const int y = (static_cast<int>(index) / columns) * rowHeight;
+            latentLabels[index]->setBounds(x, y, cellWidth, 20);
+            latentSliders[index]->setBounds(x + 4, y + 20, cellWidth - 8, 94);
+            latentLearnButtons[index]->setVisible(mapping);
+            latentClearButtons[index]->setVisible(mapping);
+            latentLearnButtons[index]->setBounds(x + 5, y + 116, cellWidth - 10, 24);
+            latentClearButtons[index]->setBounds(x + 5, y + 144, cellWidth - 10, 22);
         }
+        repaint();
     }
 
     void updateMidiLabels()
@@ -292,6 +390,10 @@ private:
         const auto state = session.snapshot(); // message-thread snapshot of all realtime values
         dryWet.setValue(state.dryWet, juce::dontSendNotification);
         engine.setDryWet(state.dryWet);
+        engine.setGenerator(state.generate, state.motionDepth, state.motionRate);
+        generator.enabled.setToggleState(state.generate, juce::dontSendNotification);
+        generator.depth.setValue(state.motionDepth, juce::dontSendNotification);
+        generator.rate.setValue(state.motionRate, juce::dontSendNotification);
         const auto engineCount = engine.latentDimensionCount();
         // A restored preset owns its shape until its named model either activates
         // or is explicitly cleared. In particular, do not let a fresh/old engine
@@ -759,22 +861,28 @@ private:
         refreshMidiInputs();
         syncControlsAndEngine();
         refreshLifecycleStatus();
+        status.setTooltip(status.getText());
+        midiStatus.setTooltip(midiStatus.getText());
 #if RAVE_HAS_LIBTORCH
         pollModelLoader();
         startDeferredRequestIfReady();
 #endif
     }
 
+    rave::ui::PerformanceTheme theme;
     juce::AudioDeviceManager deviceManager;
     rave::RaveAudioEngine engine;
     rave::StandaloneSessionState session;
     rave::StandalonePresetModelCoordinator presetModelCoordinator { session };
     rave::LatestRequestGeneration requestGate;
     juce::AudioDeviceSelectorComponent deviceSelector;
+    rave::ui::SettingsContent settingsContent;
+    juce::Viewport settingsViewport;
     std::unique_ptr<juce::Drawable> icon;
     juce::Label title, status, dryWetLabel, midiInputLabel, midiStatus;
-    juce::TextButton loadModelButton, relinkButton, savePresetButton, loadPresetButton,
-        dryWetLearnButton, dryWetClearButton;
+    rave::ui::GeneratorControls generator;
+    juce::TextButton loadModelButton, relinkButton, savePresetButton, loadPresetButton, dryWetLearnButton,
+        dryWetClearButton, audioSettingsButton, midiModeButton;
     juce::ComboBox midiInput;
     juce::Slider dryWet{juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight};
     juce::Component latentContent;
@@ -782,6 +890,7 @@ private:
     std::vector<std::unique_ptr<juce::Label>> latentLabels;
     std::vector<std::unique_ptr<juce::Slider>> latentSliders;
     std::vector<std::unique_ptr<juce::TextButton>> latentLearnButtons, latentClearButtons;
+    juce::TooltipWindow tooltips{this, 650};
     std::unique_ptr<juce::FileChooser> fileChooser;
     juce::StringArray knownMidiIds;
     juce::String activeMidiInputId;
@@ -798,6 +907,7 @@ private:
 #endif
 };
 
+#if !defined(RAVE_UI_TEST)
 class MainWindow final : public juce::DocumentWindow
 {
 public:
@@ -810,7 +920,7 @@ public:
         setUsingNativeTitleBar(true);
         setContentOwned(new MainComponent(), true);
         setResizable(true, true);
-        setResizeLimits(480, 420, 1600, 1200);
+        setResizeLimits(640, 480, 1100, 820);
         centreWithSize(getWidth(), getHeight());
         setVisible(true);
     }
@@ -827,7 +937,7 @@ public:
     {
         return "RAVE Performance Instrument";
     }
-    [[nodiscard]] const juce::String getApplicationVersion() override { return "0.1.0"; }
+    [[nodiscard]] const juce::String getApplicationVersion() override { return ProjectInfo::versionString; }
     void initialise(const juce::String&) override
     {
         window = std::make_unique<MainWindow>(getApplicationName());
@@ -837,5 +947,8 @@ public:
 private:
     std::unique_ptr<MainWindow> window;
 };
+#endif
 } // namespace
+#if !defined(RAVE_UI_TEST)
 START_JUCE_APPLICATION(RaveApplication)
+#endif

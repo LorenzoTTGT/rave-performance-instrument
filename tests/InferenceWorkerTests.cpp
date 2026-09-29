@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -61,6 +62,11 @@ public:
         return true;
     }
 
+    bool generate(std::span<const float> latent, std::span<float> output) override
+    {
+        std::fill(output.begin(), output.end(), latent[0]);
+        return true;
+    }
     double sampleRate = 0.0;
     std::size_t maximumBlockSize = 0;
     std::atomic<bool> resetCalled { false };
@@ -410,8 +416,31 @@ void testLatentBoundaryRejectsBeforeWorkerMutation()
             "worker rejects 4097 transactionally before allocation");
 }
 
+void testGenerator()
+{
+    rave::InferenceWorker worker;
+    worker.setBackend(std::make_shared<GainBackend>());
+    worker.prepare(48000.0, 8);
+    require(worker.setLatentControl(0, 1.0f), "generator latent set");
+    worker.setGenerator(true, 0.0f, 0.1f);
+    require(worker.start(), "generator worker starts");
+    std::array<float, 8> input{}, output{};
+    input.fill(99.0f);
+    require(worker.trySubmit(input.data(), input.size()), "generator frame submitted");
+    std::size_t count = 0;
+    require(receiveWithin(worker, output.data(), output.size(), count), "decoder output received");
+    require(count == 8 && std::abs(output[0] - 0.25f * std::tanh(1.0f)) < 0.0001f,
+            "generator bypasses audio and bounds its output");
+    worker.setGenerator(true, 1.0f, 0.5f);
+    require(worker.trySubmit(input.data(), input.size(), 3000), "moving latent frame submitted");
+    require(receiveWithin(worker, output.data(), output.size(), count), "moving output received");
+    require(output[0] > 0.23f && output[0] < 0.25f, "latent motion changes sound without input");
+    worker.stop();
+}
+
 int main()
 {
+    testGenerator();
     testLifecycleAndProcessing();
     testStartReportsResetFailureDiagnostic();
     testThreadStartFailureIsContained();

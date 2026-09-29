@@ -1,0 +1,17 @@
+{
+  "name": "rave-repository-tools",
+  "private": true,
+  "scripts": {
+    "format": "node scripts/format.mjs --write",
+    "format:check": "node scripts/format.mjs",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{md,json,yml,yaml,mjs}": "prettier --write"
+  },
+  "devDependencies": {
+    "husky": "9.1.7",
+    "lint-staged": "16.1.5",
+    "prettier": "3.6.2"
+  }
+}

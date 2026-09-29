@@ -69,6 +69,9 @@ public:
     // worker start, so engine/status-level tests can exercise thread-start
     // failure containment deterministically. Production never sets it.
     std::function<void()> workerThreadStartHookForTesting;
+    // Set while stopped; unlike backend completion, this observes publication
+    // to the worker output queue (or a completed output-queue drop).
+    std::function<void()> workerOutputHandledHookForTesting;
 
     // Thread-safe lifecycle outcome of the most recent prepare: empty when
     // nothing is degraded, otherwise an actionable description of why the
@@ -101,6 +104,10 @@ public:
     // then renders bounded dry pass-through.
     [[nodiscard]] bool hasUsableModel() const;
 
+    void setGenerator(bool enabled, float depth, float rate) noexcept
+    {
+        inferenceWorker.setGenerator(enabled, depth, rate);
+    }
     void setDryWet(float newValue) noexcept;
     void setWetSuppressed(bool shouldSuppress) noexcept;
     [[nodiscard]] float dryWet() const noexcept;

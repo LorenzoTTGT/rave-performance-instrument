@@ -424,6 +424,7 @@ bool RaveAudioEngine::prepareAndStart(const double sampleRate,
         }
 
         inferenceWorker.threadStartHookForTesting = workerThreadStartHookForTesting;
+        inferenceWorker.outputHandledHookForTesting = workerOutputHandledHookForTesting;
         if (!inferenceWorker.start(startError))
         {
             const auto detail = startError != nullptr && !startError->empty()
@@ -569,6 +570,7 @@ void RaveAudioEngine::processAudio(
     if (numSamples <= 0 || outputChannelData == nullptr)
         return;
 
+    const bool generating = inferenceWorker.isGenerating();
     const auto channels = callbackOutputChannels.load(std::memory_order_relaxed);
     if (dryTimeline.empty())
     {
@@ -610,8 +612,8 @@ void RaveAudioEngine::processAudio(
         {
             const auto* input = inputChannelData != nullptr && channel < numInputChannels
                 ? inputChannelData[channel] : nullptr;
-            dryTimeline[static_cast<std::size_t>(channel) * dryRingSamples + dryIndex]
-                = input != nullptr ? input[sample] : 0.0f;
+            dryTimeline[static_cast<std::size_t>(channel) * dryRingSamples + dryIndex] =
+                !generating && input != nullptr ? input[sample] : 0.0f;
         }
 
         inputFrame[static_cast<std::size_t>(sampleClock % inferenceQuantumSamples)] =

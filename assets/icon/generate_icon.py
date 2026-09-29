@@ -33,8 +33,16 @@ def render(directory: Path) -> None:
     for size in SIZES:
         output = output_for(directory, size)
         subprocess.run(
-            ["rsvg-convert", "--width", str(size), "--height", str(size),
-             "--output", str(output), str(SOURCE)],
+            [
+                "rsvg-convert",
+                "--width",
+                str(size),
+                "--height",
+                str(size),
+                "--output",
+                str(output),
+                str(SOURCE),
+            ],
             check=True,
         )
 
@@ -46,9 +54,9 @@ def png_details(path: Path) -> tuple[int, int, int, int, bytes]:
     width, height, bit_depth, colour_type = struct.unpack(">IIBB", data[16:26])
     position, idat = 8, bytearray()
     while position < len(data):
-        length = struct.unpack(">I", data[position:position + 4])[0]
-        kind = data[position + 4:position + 8]
-        payload = data[position + 8:position + 8 + length]
+        length = struct.unpack(">I", data[position : position + 4])[0]
+        kind = data[position + 4 : position + 8]
+        payload = data[position + 8 : position + 8 + length]
         if kind == b"IDAT":
             idat.extend(payload)
         position += 12 + length
@@ -60,7 +68,10 @@ def has_transparent_margin(width: int, height: int, scanlines: bytes) -> bool:
     stride, position, previous = width * 4, 0, bytearray(width * 4)
     alpha_values: list[int] = []
     for _ in range(height):
-        filter_type, filtered = scanlines[position], scanlines[position + 1:position + 1 + stride]
+        filter_type, filtered = (
+            scanlines[position],
+            scanlines[position + 1 : position + 1 + stride],
+        )
         position += stride + 1
         row = bytearray(stride)
         for index, value in enumerate(filtered):
@@ -77,12 +88,19 @@ def has_transparent_margin(width: int, height: int, scanlines: bytes) -> bool:
                 decoded = value + ((left + above) // 2)
             elif filter_type == 4:
                 candidate = left + above - upper_left
-                distances = (abs(candidate - left), abs(candidate - above), abs(candidate - upper_left))
-                decoded = value + (left if distances[0] <= distances[1] and distances[0] <= distances[2]
-                                   else above if distances[1] <= distances[2] else upper_left)
+                distances = (
+                    abs(candidate - left),
+                    abs(candidate - above),
+                    abs(candidate - upper_left),
+                )
+                decoded = value + (
+                    left
+                    if distances[0] <= distances[1] and distances[0] <= distances[2]
+                    else above if distances[1] <= distances[2] else upper_left
+                )
             else:
                 raise ValueError(f"unsupported PNG filter {filter_type}")
-            row[index] = decoded & 0xff
+            row[index] = decoded & 0xFF
         alpha_values.extend(row[3::4])
         previous = row
     return 0 in alpha_values and 255 in alpha_values
@@ -104,7 +122,9 @@ def verify(directory: Path, require_manifest: bool) -> None:
         if (width, height) != (size, size):
             raise ValueError(f"{path}: expected {size}x{size}, got {width}x{height}")
         if (bit_depth, colour_type) != (8, 6):
-            raise ValueError(f"{path}: expected 8-bit RGBA PNG, got {bit_depth}-bit type {colour_type}")
+            raise ValueError(
+                f"{path}: expected 8-bit RGBA PNG, got {bit_depth}-bit type {colour_type}"
+            )
         if not has_transparent_margin(width, height, scanlines):
             raise ValueError(f"{path}: expected both transparent and opaque pixels")
         if require_manifest and expected.get(path.name) != sha256(path):
@@ -113,8 +133,10 @@ def verify(directory: Path, require_manifest: bool) -> None:
 
 def write_manifest() -> None:
     MANIFEST.write_text(
-        "".join(f"{sha256(output_for(ROOT, size))}  {output_for(ROOT, size).name}\n"
-                for size in SIZES),
+        "".join(
+            f"{sha256(output_for(ROOT, size))}  {output_for(ROOT, size).name}\n"
+            for size in SIZES
+        ),
         encoding="utf-8",
     )
 
@@ -122,8 +144,19 @@ def write_manifest() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--write", action="store_true", help="render assets and update SHA256SUMS")
-    mode.add_argument("--check", action="store_true", help="verify checked-in assets and reproducibility")
+    mode.add_argument(
+        "--write", action="store_true", help="render assets and update SHA256SUMS"
+    )
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="verify checked-in assets and reproducibility",
+    )
+    parser.add_argument(
+        "--assets-only",
+        action="store_true",
+        help="check committed assets without regenerating",
+    )
     args = parser.parse_args()
 
     if args.write:
@@ -133,6 +166,11 @@ def main() -> int:
         return 0
 
     verify(ROOT, require_manifest=True)
+    if args.assets_only:
+        print(
+            "RAVE icon assets: hashes, dimensions and transparency pass; regeneration not requested"
+        )
+        return 0
     with tempfile.TemporaryDirectory(prefix="rave-icon-") as temporary:
         rendered = Path(temporary)
         render(rendered)
@@ -144,7 +182,9 @@ def main() -> int:
                 raise ValueError(
                     f"{checked_in.name}: regenerated bytes differ; use --write after reviewing the renderer change"
                 )
-    print("RAVE icon assets: dimensions, RGBA transparency, hashes, and regeneration match")
+    print(
+        "RAVE icon assets: dimensions, RGBA transparency, hashes, and regeneration match"
+    )
     return 0
 
 

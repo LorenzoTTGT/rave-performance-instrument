@@ -29,6 +29,8 @@ public:
         juce::String audioOutputId;
         juce::String audioInputId;
         float dryWet = 0.0f;
+        bool generate = false;
+        float motionDepth = 0.5f, motionRate = 0.1f;
         std::vector<float> latents;
         std::vector<int> midiControllers; // element 0 dry/wet, then latent index + 1
     };
@@ -46,6 +48,7 @@ public:
     [[nodiscard]] int midiController(int target) const noexcept;
     [[nodiscard]] bool applyMidiCc(int controller, int value) noexcept;
 
+    void setGenerator(bool enabled, float depth, float rate);
     void setModelPath(juce::String value);
     void setMidiInputId(juce::String value);
     void setAudioSetup(juce::String type, juce::String output, juce::String input);

@@ -67,6 +67,16 @@ RavePluginProcessor::RavePluginProcessor(std::function<rave::ModelBackendPtr()> 
         addParameter(macro.release());
     }
 
+    const std::array<juce::String, 3> ids{"generate", "motionDepth", "motionRate"};
+    const std::array<float, 3> minima{0.0f, 0.0f, 0.01f}, maxima{1.0f, 2.0f, 2.0f}, defaults{0.0f, 0.5f, 0.1f};
+    for (std::size_t index = 0; index < ids.size(); ++index)
+    {
+        auto *control = new juce::AudioParameterFloat(
+            juce::ParameterID{ids[index], 1}, ids[index],
+            juce::NormalisableRange<float>{minima[index], maxima[index], index == 0 ? 1.0f : 0.01f}, defaults[index]);
+        generatorParameters[index] = control;
+        addParameter(control);
+    }
     for (auto& controller : midiControllers)
         controller.store(-1, std::memory_order_relaxed);
     for (std::size_t target = 0; target < midiTargetCount; ++target)
@@ -156,8 +166,8 @@ bool RavePluginProcessor::isBusesLayoutSupported(const BusesLayout& layouts) con
 {
     const auto input = layouts.getMainInputChannelSet();
     const auto output = layouts.getMainOutputChannelSet();
-    return input == output
-        && (output == juce::AudioChannelSet::mono() || output == juce::AudioChannelSet::stereo());
+    return (input.isDisabled() || input == output) &&
+           (output == juce::AudioChannelSet::mono() || output == juce::AudioChannelSet::stereo());
 }
 
 float RavePluginProcessor::authoritativeParameterValue(
@@ -178,6 +188,8 @@ void RavePluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     juce::ScopedNoDenormals noDenormals;
     applyMidi(midiMessages);
     engine.setDryWet(authoritativeParameterValue(0, dryWetParameter));
+    engine.setGenerator(generatorParameters[0]->get() >= 0.5f, generatorParameters[1]->get(),
+                        generatorParameters[2]->get());
 
     constexpr std::size_t maximumSupportedChannels = 2;
     const auto channelCount = static_cast<std::size_t>(buffer.getNumChannels());
@@ -191,7 +203,9 @@ void RavePluginProcessor::processBlock(juce::AudioBuffer<float>& buffer,
     std::array<float*, maximumSupportedChannels> outputs {};
     for (std::size_t channel = 0; channel < channelCount; ++channel)
     {
-        inputs[channel] = buffer.getReadPointer(static_cast<int>(channel));
+        inputs[channel] = static_cast<int>(channel) < getTotalNumInputChannels()
+                              ? buffer.getReadPointer(static_cast<int>(channel))
+                              : nullptr;
         outputs[channel] = buffer.getWritePointer(static_cast<int>(channel));
     }
 
@@ -228,6 +242,8 @@ void RavePluginProcessor::getStateInformation(juce::MemoryBlock& destinationData
         stateSnapshotInterleaveForTesting();
     juce::XmlElement state("RavePluginState");
     state.setAttribute("version", stateSchemaVersion);
+    for (std::size_t index = 0; index < generatorParameters.size(); ++index)
+        state.setAttribute("generator" + juce::String(index), generatorParameters[index]->get());
     state.setAttribute("dryWet", authoritativeParameterValue(0, dryWetParameter));
     for (std::size_t index = 0; index < macroCount; ++index)
     {
@@ -326,6 +342,10 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
     for (std::size_t i=0;i<macroCount;++i)
         if (!finiteAttribute(*state, "macro"+juce::String(i+1), 0.0)) return;
 
+    for (int index = 0; index < 3; ++index)
+        if (!finiteAttribute(*state, "generator" + juce::String(index), 0.0))
+            return;
+
     const auto restoredDryWet = juce::jlimit(
         0.0f, 1.0f, static_cast<float>(state->getDoubleAttribute("dryWet", 0.0)));
     std::array<float, macroCount> restoredMacros {};
@@ -389,6 +409,16 @@ void RavePluginProcessor::setStateInformation(const void* const data, const int 
         const auto restoreParameter = [](juce::AudioParameterFloat& parameter, const float value) {
             parameter.setValueNotifyingHost(parameter.convertTo0to1(value));
         };
+        const std::array<float, 3> defaults{0.0f, 0.5f, 0.1f};
+        for (std::size_t index = 0; index < generatorParameters.size(); ++index)
+        {
+            auto &parameter = *generatorParameters[index];
+            restoreParameter(parameter,
+                             parameter.getNormalisableRange().snapToLegalValue(static_cast<float>(
+                                 state->getDoubleAttribute("generator" + juce::String(index), defaults[index]))));
+            if (requestGeneration.load(std::memory_order_acquire) != restoreGeneration)
+                return;
+        }
         restoreParameter(*dryWetParameter, restoredDryWet);
         if (requestGeneration.load(std::memory_order_acquire) != restoreGeneration)
             return;
