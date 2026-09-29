@@ -12,20 +12,51 @@ This document defines the measurable acceptance contract for the dependable one-
 
 Recorded on 2026-09-12.
 
-| Item | Qualification baseline |
-| --- | --- |
-| Hardware | Macmini8,1; Intel Core i7-8700B 3.20 GHz; 32 GiB RAM |
-| OS | macOS 14.8.8 (23J620), Darwin x86_64 |
-| Compiler | Apple Clang 16.0.0 (clang-1600.0.26.3) |
-| CMake / Ninja | CMake 4.2.3; Ninja 1.13.2 |
-| JUCE | 7.0.9 |
-| LibTorch | PyTorch/LibTorch 2.2.2, x86_64 |
-| Standalone | JUCE CoreAudio device backend |
-| AU host | Logic Pro 11.2.2 |
-| VST3/AU host | REAPER 7.79 |
-| Additional host | Ableton Live 12.4.2 |
+| Item            | Qualification baseline                               |
+| --------------- | ---------------------------------------------------- |
+| Hardware        | Macmini8,1; Intel Core i7-8700B 3.20 GHz; 32 GiB RAM |
+| OS              | macOS 14.8.8 (23J620), Darwin x86_64                 |
+| Compiler        | Apple Clang 16.0.0 (clang-1600.0.26.3)               |
+| CMake / Ninja   | CMake 4.2.3; Ninja 1.13.2                            |
+| JUCE            | 7.0.9                                                |
+| LibTorch        | PyTorch/LibTorch 2.2.2, x86_64                       |
+| Standalone      | JUCE CoreAudio device backend                        |
+| AU host         | Logic Pro 11.2.2                                     |
+| VST3/AU host    | REAPER 7.79                                          |
+| Additional host | Ableton Live 12.4.2                                  |
 
 The baseline source before qualification work is commit `10da07e57d5537b96106d7694611300e8d9a7211`. Later reports must use their actual tested revision instead.
+
+## Windows REAPER host smoke — 2026-09-29
+
+This is a bounded loading observation, not the RAVE-05 audio or soak qualification.
+The tested **installed** VST3 was version 0.3.0 from source revision
+`df61f49d87983556acc95870fb15f5f05be06c0d`; its entry binary matched the
+retained staged package. Host: REAPER 7.80 x64 on Windows 11 Pro build 26100,
+AMD Ryzen 5 3550H, 15.4 GiB RAM, WaveOut at 44.1 kHz with a 1024-sample
+buffer. The newer 0.3.1 Windows release was not installed for this observation.
+
+- The installed VST3 passed a separate JUCE module-info scan, reporting its
+  processor, controller, and compatibility classes as version 0.3.0.
+- REAPER's VST cache initially predated installation and had no RAVE entry.
+  Launching REAPER refreshed the cache and discovered the VST3. A temporary
+  ReaScript inserted it on a new blank-project track, reported the expected FX
+  name and 2,096 host parameters, and opened a floating FX window. REAPER
+  remained responsive; no matching Windows application crash was recorded.
+- The factory-model menu listed all four bundled exports. Every installed model
+  weight matched the pinned size and SHA-256 in `assets/models/manifest.json`.
+  Selecting Freesound Loops Lite at 44.1 kHz produced the visible status
+  `freesoundloop10k_raspi_b2048_r44100_z16.ts active — 16 latent dimensions`.
+  The latent controls appeared in the editor.
+- Birds, Voice, and full Freesound Loops declare 48 kHz. The tested host ran at
+  44.1 kHz, so this run did not qualify those models in REAPER. The runtime
+  contract rejects a model whose declared rate differs from the active host
+  rate; changing the host/device to 48 kHz is required for this build.
+
+No audio output, realtime deadline, 30-minute interactive soak, preset recall,
+or other-machine DAW behavior was established by this smoke check. The native
+0.3.1 CI build/test/package/relocation jobs passed on Windows x64, Linux x86_64,
+and Intel macOS x86_64; those jobs do not replace a host check on each machine.
 
 ## Development model fixtures
 
