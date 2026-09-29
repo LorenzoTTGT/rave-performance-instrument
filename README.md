@@ -43,15 +43,15 @@ Reference projects:
 
 ## Proposed stack
 
-| Layer | Recommendation | Rationale |
-| --- | --- | --- |
-| Application and plugin framework | JUCE + C++20 | Native audio, MIDI, UI, standalone, VST3, and AU targets |
-| Initial model runtime | LibTorch, CPU inference | Closest compatibility with exported RAVE TorchScript models |
-| Interface | Custom JUCE components | Faders, knobs, XY pads, meters, and modulation displays |
-| Conventional DSP | JUCE DSP plus custom processors | Filtering, gain, envelopes, saturation, delay, and mixing |
-| Routing | Small explicit processing graph | Performance-oriented flexibility without a patching language |
-| State | Versioned presets and sessions | Model identity, controls, routing, MIDI, and modulation assignments |
-| Build | CMake | Shared engine with standalone and plugin targets |
+| Layer                            | Recommendation                  | Rationale                                                           |
+| -------------------------------- | ------------------------------- | ------------------------------------------------------------------- |
+| Application and plugin framework | JUCE + C++20                    | Native audio, MIDI, UI, standalone, VST3, and AU targets            |
+| Initial model runtime            | LibTorch, CPU inference         | Closest compatibility with exported RAVE TorchScript models         |
+| Interface                        | Custom JUCE components          | Faders, knobs, XY pads, meters, and modulation displays             |
+| Conventional DSP                 | JUCE DSP plus custom processors | Filtering, gain, envelopes, saturation, delay, and mixing           |
+| Routing                          | Small explicit processing graph | Performance-oriented flexibility without a patching language        |
+| State                            | Versioned presets and sessions  | Model identity, controls, routing, MIDI, and modulation assignments |
+| Build                            | CMake                           | Shared engine with standalone and plugin targets                    |
 
 ## Playable modes
 
@@ -136,33 +136,9 @@ identity resolution remains deferred.
 
 ## Building
 
-A JUCE CMake package can be supplied by the system, or JUCE 7.0.9 can be fetched:
+Use the native build wrapper: `./build.sh --test` on Linux/macOS or `.\build.ps1 --test --icon-assets-only` on Windows. `VERSION` controls all artifact versions. Builds remain local; staging and installation are separate explicit actions.
 
-```sh
-cmake -S . -B build -G Ninja -DRAVE_USE_SYSTEM_JUCE=OFF
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-```
-
-To enable LibTorch, include its CMake prefix. For a Python PyTorch installation:
-
-```sh
-cmake -S . -B build -G Ninja -DRAVE_USE_SYSTEM_JUCE=OFF \
-  -DCMAKE_PREFIX_PATH="$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)')"
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-```
-
-Use `-DRAVE_ENABLE_LIBTORCH=OFF` for an engine/UI-only build. On macOS the
-build produces:
-
-- `build/rave_instrument_artefacts/.../RAVE Performance Instrument.app`
-- `build/rave_plugin_artefacts/.../VST3/RAVE Performance Instrument.vst3`
-- `build/rave_plugin_artefacts/.../AU/RAVE Performance Instrument.component`
-
-Debug plugin bundles are ad-hoc signed after JUCE generates VST3 metadata so
-local hosts can validate the complete bundle. Distribution signing and
-notarization remain release steps.
+See [native build and artifact procedures](docs/BUILDING.md) for prerequisites, packaging, runtime relocation, installation destinations and formatting checks.
 
 ### Icon assets
 
@@ -230,3 +206,39 @@ Run one model continuously in a standalone app with:
 - Reliable preset recall
 
 Benchmark on the Mac under realistic audio loads before adding the elaborate interface. The first milestone is successful only if the system behaves like a dependable musical instrument.
+
+## Compact performance interface
+
+The standalone app and plugin share a dark interface. The standalone opens at
+700 × 480; the plugin at 680 × 460. The plugin shows up to 16 latent controls as
+compact sliders within that default window. Larger latent spaces and the optional
+MIDI mapping controls can scroll independently of the dry/wet mix. Numeric values
+remain editable, mix is displayed as a percentage, and double-click resets a knob.
+
+Use **MIDI** to reveal learning assignments. In the standalone, **Audio** opens a
+scrollable panel for audio devices and MIDI input selection. Preset load/save and
+missing-model relinking remain on the main toolbar. Full status messages are also
+available as tooltips. The redesign preserves host parameter IDs, MIDI mappings,
+preset compatibility and the existing model lifecycle.
+
+The plugin tests include in-process layout and interaction checks for both interfaces.
+Set `RAVE_UI_PREVIEW_DIR` to an absolute local directory when running them to save
+component renders without opening or automating desktop windows.
+
+### Starter models and input-free synthesis
+
+Packaged builds include Birds (Pluma), Voice (VocalSet), and two Freesound Loops exports.
+Start with **Freesound Loops Lite at 44.1 kHz** on modest CPUs. The other three
+models require **48 kHz** and more CPU. Select them from **Load model**.
+To synthesize without an audio source, enable **Generate without audio input**,
+raise **Dry / Wet**, and move the latent knobs. **Motion depth** and **Motion rate**
+add slow independent latent modulation; zero depth holds the chosen latent vector.
+
+The decoder produces audio directly; no separately trained prior is required.
+Generator settings are saved in presets/host state and default to off.
+Birds and Voice are non-commercial models; see the
+[starter pack licenses and credits](assets/models/README.md).
+Build instructions include the pinned model fetch step.
+
+Project-owned plugin code is **GPL-3.0-or-later**. See [COPYING.md](COPYING.md) for
+third-party terms and the distinction between plugin and model licensing.

@@ -7,3 +7,11 @@ CMakeCache.txt
 .ninja_*
 compile_commands.json
 .qualification-models/
+
+node_modules/
+.venv/
+__pycache__/
+
+# Pinned starter weights are fetched and verified by scripts/models.py.
+assets/models/*.ts
+assets/models/*.part

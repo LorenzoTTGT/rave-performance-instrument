@@ -66,7 +66,11 @@ void testRaveMetadataAndLatentOffsets(const char* const modelPath)
     require(output == std::array<float, 4> { 6.0f, 9.0f, 12.0f, 15.0f },
             "per-dimension offsets broadcast over latent frames");
 
+    require(backend.generate(latentOffsets, output), "decoder-only synthesis accepts latent values");
+    require(output == std::array<float, 4>{3.0f, 3.0f, 3.0f, 3.0f}, "decoder synthesis does not encode audio input");
+    require(!backend.generate({}, output), "decoder rejects missing latent values");
     backend.prepare(44100.0, 8);
+    require(!backend.generate(latentOffsets, output), "decoder rejects mismatched sample rate");
     require(!backend.process(input, {}, output), "sample-rate mismatch fails safely");
 }
 } // namespace
@@ -223,12 +227,12 @@ void testRealModelSmoke(const char* const modelPath)
     std::string error;
     require(backend.load(modelPath, error), "real model loads");
     require(error.empty(), "real model load has no error");
-    require(backend.modelSampleRate() == 48000, "real model declares 48 kHz");
-    require(backend.latentDimensionCount() == 12, "birds_pluma exposes 12 latent dimensions");
-    require(backend.supportsConfiguration(48000.0, 2048), "real model supports the runtime configuration");
+    const double rate = backend.modelSampleRate();
+    require(rate == 48000.0 || rate == 44100.0, "factory model declares its sample rate");
+    require(backend.latentDimensionCount() > 0, "factory model exposes latent dimensions");
+    require(backend.supportsConfiguration(rate, 2048), "real model supports the runtime configuration");
 
-    const auto qualification =
-        rave::qualifyModelBackend(backend, rave::ModelRuntimeConfiguration { 48000.0, 2048 });
+    const auto qualification = rave::qualifyModelBackend(backend, rave::ModelRuntimeConfiguration{rate, 2048});
     require(qualification.empty(), "real model qualifies at 48 kHz / 2048 samples");
 
     std::string resetError;
@@ -242,15 +246,44 @@ void testRealModelSmoke(const char* const modelPath)
         require(std::isfinite(sample), "real model forward output is finite");
 
     require(backend.reset(resetError), "real model resets before the latent path");
-    const std::vector<float> latentOffsets(backend.latentDimensionCount(), 0.0f);
+    std::vector<float> latentOffsets(backend.latentDimensionCount(), 0.0f);
     require(backend.process(input, latentOffsets, output),
             "real model processes a 2048-sample encode/decode block");
     for (const auto sample : output)
         require(std::isfinite(sample), "real model latent output is finite");
+    double energy = 0.0;
+    double maximumMilliseconds = 0.0, totalMilliseconds = 0.0;
+    for (int frame = 0; frame < 60; ++frame)
+    {
+        for (std::size_t index = 0; index < latentOffsets.size(); ++index)
+            latentOffsets[index] = 0.5f * std::sin(static_cast<float>(frame) * 0.05f + static_cast<float>(index));
+        const auto start = std::chrono::steady_clock::now();
+        require(backend.generate(latentOffsets, output), "factory decoder generates without input");
+        const auto milliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        if (frame >= 20)
+        {
+            maximumMilliseconds = std::max(maximumMilliseconds, milliseconds);
+            totalMilliseconds += milliseconds;
+            for (const auto sample : output)
+            {
+                require(std::isfinite(sample), "generated audio is finite");
+                energy += static_cast<double>(sample) * sample;
+            }
+        }
+    }
+    require(energy > 1.0e-10, "latent motion produces non-silent audio");
+    std::cout << "Factory decoder: " << modelPath << " mean_ms=" << totalMilliseconds / 40.0
+              << " max_ms=" << maximumMilliseconds << " frame_budget_ms=" << 2048000.0 / rate << '\n';
 }
 
 int main(const int argc, const char* const* argv)
 {
+    if (argc == 3 && std::string(argv[1]) == "--factory")
+    {
+        testRealModelSmoke(argv[2]);
+        return 0;
+    }
     constexpr int expectedBaseArguments = 15; // argv[0] plus fourteen fixtures
     const char* const realModelPath = std::getenv("RAVE_TEST_MODEL_PATH");
     const bool realModelRequested = realModelPath != nullptr && realModelPath[0] != '\0';

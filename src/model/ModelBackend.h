@@ -46,6 +46,11 @@ public:
         return sampleRate > 0.0;
     }
 
+    [[nodiscard]] virtual bool supportsGeneration() const noexcept { return false; }
+
+    // Decoder-only synthesis; unsupported backends fail closed.
+    virtual bool generate(std::span<const float>, std::span<float>) { return false; }
+
     // Called by an inference worker, never directly by the real-time audio callback.
     virtual bool process(std::span<const float> input,
                          std::span<const float> latentControls,

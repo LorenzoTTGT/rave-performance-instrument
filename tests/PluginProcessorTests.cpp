@@ -15,6 +15,7 @@
 #include <thread>
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
+void testStandaloneUi();
 
 namespace allocationAudit
 {
@@ -44,6 +45,16 @@ void require(const bool condition, const char* const message)
         std::cerr << "FAILED: " << message << '\n';
         std::exit(EXIT_FAILURE);
     }
+}
+
+#include "PerformanceUiChecks.h"
+
+juce::String missingModelPath(const juce::String &name)
+{
+    return juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("rave-missing-model", "", false)
+        .getChildFile(name)
+        .getFullPathName();
 }
 
 bool waitForModelSettled(RavePluginProcessor& processor)
@@ -142,7 +153,9 @@ void testStateSchemaMigrationsBoundsAndMacroAuthority()
     require(std::abs(processor.dryWetParameterReference().getValue() - before) < 0.000001f,
             "oversized state fails closed");
 
-    juce::XmlElement missing("RavePluginState");missing.setAttribute("version",2);missing.setAttribute("modelPath","/definitely/missing/rave-model.ts");
+    juce::XmlElement missing("RavePluginState");
+    missing.setAttribute("version", 2);
+    missing.setAttribute("modelPath", missingModelPath("rave-model.ts"));
     missing.setAttribute("dryWet",.75);missing.setAttribute("macro1",1.5);auto* lat=missing.createNewChildElement("Latents");lat->setAttribute("count",4);lat->setAttribute("firstIndex",8);
     for(int i=8;i<12;++i)lat->setAttribute("v"+juce::String(i),float(i)/10.f);
     block=xmlState(missing);processor.setStateInformation(block.getData(),int(block.getSize()));
@@ -221,7 +234,7 @@ void testFactoryAudioAndState()
 
     auto* dryWet = findParameter(*processor, "dryWet");
     require(dryWet != nullptr, "dry/wet parameter exposed");
-    require(processor->getParameters().size() == 9, "stable dry/wet plus eight macro parameters");
+    require(processor->getParameters().size() == 12, "stable mix/macros followed by generator parameters");
     for (std::size_t index = 0; index < RavePluginProcessor::macroCount; ++index)
         require(findParameter(*processor, "macro" + juce::String(index + 1)) != nullptr,
                 "stable macro parameter ID exposed");
@@ -397,6 +410,7 @@ void testEditorClosureDuringLoad(const juce::File& modelFile)
     require(processor->finishModelLoadIfReady(), "loaded model activates without an editor");
     require(processor->latentDimensionCount() == 2, "latent metadata available after editor closure");
 
+    checkPerformanceEditor(*processor);
     editor.reset(processor->createEditor());
     require(editor != nullptr, "editor reopens after activation");
     editor.reset();
@@ -728,17 +742,20 @@ public:
 class RelinkTwelveLatentBackend final : public rave::ModelBackend
 {
 public:
-    explicit RelinkTwelveLatentBackend(std::shared_ptr<std::atomic<bool>> reject,
-                                       const bool failActivation = false)
-        : rejectLoad(std::move(reject)), failActivationReset(failActivation) {}
-    bool load(const std::string&, std::string& error) override
+    explicit RelinkTwelveLatentBackend(std::shared_ptr<std::atomic<bool>> reject, const bool failActivation = false,
+                                       const std::size_t dimensions = 12)
+        : rejectLoad(std::move(reject)), failActivationReset(failActivation), latentDimensions(dimensions)
     {
-        if (!rejectLoad->load(std::memory_order_acquire)) return true;
+    }
+    bool load(const std::string &, std::string &error) override
+    {
+        if (!rejectLoad->load(std::memory_order_acquire))
+            return true;
         error = "injected qualification refusal";
         return false;
     }
     void prepare(double, std::size_t) override {}
-    bool reset(std::string& error) override
+    bool reset(std::string &error) override
     {
         ++resetCalls;
         if (failActivationReset && resetCalls == 2)
@@ -748,26 +765,47 @@ public:
         }
         return true;
     }
-    std::size_t latentDimensionCount() const noexcept override { return 12; }
+    std::size_t latentDimensionCount() const noexcept override { return latentDimensions; }
     bool process(const std::span<const float> input, const std::span<const float>,
                  const std::span<float> output) override
     {
-        for (std::size_t i = 0; i < input.size(); ++i) output[i] = input[i] * 3.0f;
+        for (std::size_t i = 0; i < input.size(); ++i)
+            output[i] = input[i] * 3.0f;
         return true;
     }
+
 private:
     std::shared_ptr<std::atomic<bool>> rejectLoad;
     bool failActivationReset = false;
     int resetCalls = 0;
+    std::size_t latentDimensions = 12;
 };
+
+void testSixteenLatentEditor()
+{
+    auto reject = std::make_shared<std::atomic<bool>>(false);
+    auto modelFile = juce::File::createTempFile("rave-sixteen-latent.ts");
+    require(modelFile.replaceWithText("injected backend ignores contents"), "create sixteen-latent fixture");
+    RavePluginProcessor processor([reject] { return std::make_shared<RelinkTwelveLatentBackend>(reject, false, 16); });
+    processor.prepareToPlay(44100.0, 2048);
+    require(processor.startModelLoad(modelFile), "start sixteen-latent model load");
+    require(waitForModelSettled(processor) && processor.finishModelLoadIfReady() &&
+                processor.latentDimensionCount() == 16,
+            "sixteen-latent model activates");
+    checkPerformanceEditor(processor);
+    processor.releaseResources();
+    require(modelFile.deleteFile(), "remove sixteen-latent fixture");
+}
 
 class BlockingRestoreBackend final : public rave::ModelBackend
 {
 public:
     BlockingRestoreBackend(std::shared_ptr<std::atomic<bool>> enteredValue,
                            std::shared_ptr<std::atomic<bool>> releaseValue)
-        : entered(std::move(enteredValue)), release(std::move(releaseValue)) {}
-    bool load(const std::string&, std::string&) override
+        : entered(std::move(enteredValue)), release(std::move(releaseValue))
+    {
+    }
+    bool load(const std::string &, std::string &) override
     {
         entered->store(true, std::memory_order_release);
         while (!release->load(std::memory_order_acquire))
@@ -775,10 +813,10 @@ public:
         return true;
     }
     void prepare(double, std::size_t) override {}
-    bool reset(std::string&) override { return true; }
+    bool reset(std::string &) override { return true; }
     std::size_t latentDimensionCount() const noexcept override { return 12; }
-    bool process(std::span<const float>, std::span<const float>,
-                 std::span<float>) override { return true; }
+    bool process(std::span<const float>, std::span<const float>, std::span<float>) override { return true; }
+
 private:
     std::shared_ptr<std::atomic<bool>> entered;
     std::shared_ptr<std::atomic<bool>> release;
@@ -876,6 +914,7 @@ void testDeferredRestoreDisappearanceBecomesRelinkRequired()
     for (std::size_t index = 0; index < 12; ++index)
         require(std::abs(processor.latentControl(index) - (-0.8f + float(index) * 0.2f)) < .011f,
                 "successful relink restores retained latent by index");
+    checkPerformanceEditor(processor);
     processor.releaseResources();
 
     auto oldFile = juce::File::createTempFile("rave-stale-deferred.ts");
@@ -981,7 +1020,8 @@ void testMissingRelinkSuppressionAndTwelveLatents(const juce::File& modelFile)
     processor.dryWetParameterReference().setValueNotifyingHost(1.0f);
 
     juce::XmlElement missing("RavePluginState");
-    missing.setAttribute("version", 2); missing.setAttribute("modelPath", "/missing/relink-model.ts");
+    missing.setAttribute("version", 2);
+    missing.setAttribute("modelPath", missingModelPath("relink-model.ts"));
     missing.setAttribute("dryWet", 1.0);
     for (int i = 0; i < 8; ++i) missing.setAttribute("macro" + juce::String(i + 1), -0.8 + i * 0.2);
     auto* latents = missing.createNewChildElement("Latents");
@@ -1217,13 +1257,13 @@ void testStateRestoreReconcilesMidiMailboxes()
     nested.setAttribute("version", 2);
     nested.setAttribute("macro1", 1.0);
     nested.setAttribute("midiCc1", 71);
-    nested.setAttribute("modelPath", "/definitely/missing/nested-rave-model.ts");
+    nested.setAttribute("modelPath", missingModelPath("nested-rave-model.ts"));
     const auto nestedState = xmlState(nested);
     juce::XmlElement outerNested("RavePluginState");
     outerNested.setAttribute("version", 2);
     outerNested.setAttribute("macro1", -3.0);
     outerNested.setAttribute("midiCc1", 72);
-    outerNested.setAttribute("modelPath", "/definitely/missing/outer-rave-model.ts");
+    outerNested.setAttribute("modelPath", missingModelPath("outer-rave-model.ts"));
     const auto outerNestedState = xmlState(outerNested);
     bool nestedPublisherReturned = false;
     bool nestedRestoreEntered = false;
@@ -1366,6 +1406,28 @@ void testLongSysExCallbackAllocationAndMailboxInterleaving()
 int main(const int argc, const char* const* argv)
 {
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
+    {
+        RavePluginProcessor processor;
+        checkPerformanceEditor(processor);
+    }
+    {
+        RavePluginProcessor original;
+        auto layout = original.getBusesLayout();
+        layout.inputBuses.set(0, juce::AudioChannelSet::disabled());
+        require(original.isBusesLayoutSupported(layout), "generator accepts an output-only host bus");
+        require(std::isinf(original.getTailLengthSeconds()), "continuous generator advertises an infinite tail");
+        auto &generate = original.generatorParameter(0);
+        generate.setValueNotifyingHost(1.0f);
+        original.generatorParameter(1).setValueNotifyingHost(0.75f);
+        juce::MemoryBlock state;
+        original.getStateInformation(state);
+        RavePluginProcessor restored;
+        restored.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        require(restored.generatorParameter(0).getValue() == 1.0f, "generation state survives host save");
+        require(std::abs(restored.generatorParameter(1).getValue() - 0.75f) < 0.001f,
+                "motion depth survives host save");
+    }
+    testStandaloneUi();
     testStateSchemaMigrationsBoundsAndMacroAuthority();
     testFactoryAudioAndState();
     testStateRestoreReconcilesMidiMailboxes();
@@ -1387,6 +1449,7 @@ int main(const int argc, const char* const* argv)
         testPrepareThrowAtReprepareReportsStatus(juce::File(argv[1]));
         testRollbackFailureClearsLatentsAndSerializedModelPath(juce::File(argv[1]));
 #if RAVE_HAS_LIBTORCH
+        testSixteenLatentEditor();
         testInFlightRestoreSnapshotRetainsDesiredState();
         testDeferredRestoreDisappearanceBecomesRelinkRequired();
         testMissingRelinkSuppressionAndTwelveLatents(juce::File(argv[1]));

@@ -603,16 +603,21 @@ void testPrepareValidationAndTelemetryEpochReset()
 void testControlledWorkerDeadlineIntegration()
 {
     auto backend = std::make_shared<ControlledBackend>();
+    std::atomic<int> outputsHandled{0};
     rave::RaveAudioEngine engine;
+    engine.workerOutputHandledHookForTesting = [&] { outputsHandled.fetch_add(1, std::memory_order_release); };
     engine.setModelBackend(backend);
     engine.prepare(48000.0, 2048, 1);
     engine.setDryWet(1.0f);
     std::vector<float> input(2048, 1.0f), output(2048);
-    const float* inputs[] { input.data() }; float* outputs[] { output.data() };
+    const float *inputs[]{input.data()};
+    float *outputs[]{output.data()};
     engine.processAudio(inputs, 1, outputs, 1, 2048);
-    requireEventually([&] { return backend->entered.load(std::memory_order_acquire); }, "timely backend entered worker");
+    requireEventually([&] { return backend->entered.load(std::memory_order_acquire); },
+                      "timely backend entered worker");
     backend->release.store(true, std::memory_order_release);
-    requireEventually([&] { return backend->completed.load(std::memory_order_acquire); }, "timely backend completed worker output");
+    requireEventually([&] { return outputsHandled.load(std::memory_order_acquire) >= 1; },
+                      "timely backend completed worker output");
     engine.processAudio(inputs, 1, outputs, 1, 1808); // reaches D(0)
     engine.processAudio(inputs, 1, outputs, 1, 240);  // commit then reaches P(0)
     engine.processAudio(inputs, 1, outputs, 1, 512);
@@ -620,25 +625,35 @@ void testControlledWorkerDeadlineIntegration()
     engine.release();
 
     auto lateBackend = std::make_shared<ControlledBackend>();
-    rave::RaveAudioEngine late; late.setModelBackend(lateBackend); late.prepare(48000.0, 2048, 1);
+    std::atomic<int> lateOutputsHandled{0};
+    rave::RaveAudioEngine late;
+    late.workerOutputHandledHookForTesting = [&] { lateOutputsHandled.fetch_add(1, std::memory_order_release); };
+    late.setModelBackend(lateBackend);
+    late.prepare(48000.0, 2048, 1);
     late.processAudio(inputs, 1, outputs, 1, 2048);
-    requireEventually([&] { return lateBackend->entered.load(std::memory_order_acquire); }, "late backend entered worker");
+    requireEventually([&] { return lateBackend->entered.load(std::memory_order_acquire); },
+                      "late backend entered worker");
     late.processAudio(inputs, 1, outputs, 1, 1809); // commits dry and passes D(0)
     lateBackend->release.store(true, std::memory_order_release);
-    requireEventually([&] { return lateBackend->completed.load(std::memory_order_acquire); }, "late backend completed worker output");
+    requireEventually([&] { return lateOutputsHandled.load(std::memory_order_acquire) >= 1; },
+                      "late backend completed worker output");
     late.processAudio(inputs, 1, outputs, 1, 2048); // D(1) drains stale frame zero
     require(late.runtimeTelemetry().lateResults == 1, "late real-worker result is permanently rejected");
     late.release();
 
     auto overloadedBackend = std::make_shared<ControlledBackend>();
+    std::atomic<int> overloadOutputsHandled{0};
     rave::RaveAudioEngine overloaded;
+    overloaded.workerOutputHandledHookForTesting = [&]
+    { overloadOutputsHandled.fetch_add(1, std::memory_order_release); };
     overloaded.setModelBackend(overloadedBackend);
     overloaded.prepare(48000.0, 2048, 1);
     overloaded.setDryWet(1.0f);
     std::vector<float> distinctInput(2048), distinctOutput(2048);
-    const float* distinctInputs[] { distinctInput.data() };
-    float* distinctOutputs[] { distinctOutput.data() };
-    const auto processFrame = [&](const float value) {
+    const float *distinctInputs[]{distinctInput.data()};
+    float *distinctOutputs[]{distinctOutput.data()};
+    const auto processFrame = [&](const float value)
+    {
         std::fill(distinctInput.begin(), distinctInput.end(), value);
         overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 2048);
     };
@@ -657,66 +672,56 @@ void testControlledWorkerDeadlineIntegration()
             "one blocked input plus four queued inputs drops exactly the sixth frame");
 
     overloadedBackend->release.store(true, std::memory_order_release);
-    requireEventually([&] {
-        return overloadedBackend->completedCount.load(std::memory_order_acquire) == 5;
-    }, "exactly five pre-recovery backend frames complete");
+    requireEventually([&] { return overloadOutputsHandled.load(std::memory_order_acquire) == 5; },
+                      "exactly five pre-recovery backend frames complete");
 
-    const auto requireFrameValue = [](const std::vector<float>& samples,
-                                      const float expected,
-                                      const char* const message) {
+    const auto requireFrameValue =
+        [](const std::vector<float> &samples, const float expected, const char *const message)
+    {
         for (const auto sample : samples)
             require(std::abs(sample - expected) < 0.0001f, message);
     };
-    const auto requireValueAbsent = [](const std::vector<float>& samples,
-                                       const float forbidden,
-                                       const char* const message) {
+    const auto requireValueAbsent =
+        [](const std::vector<float> &samples, const float forbidden, const char *const message)
+    {
         for (const auto sample : samples)
             require(std::abs(sample - forbidden) >= 0.0001f, message);
     };
 
-    const auto preRecoveryCompletions = overloadedBackend->completedCount.load(std::memory_order_acquire);
+    const auto preRecoveryCompletions = overloadOutputsHandled.load(std::memory_order_acquire);
     processFrame(99.0f); // frame 6; D(5) drains and frees the output queue first
-    requireFrameValue(distinctOutput, 14.0f,
-                      "every sample of missed frame 4 is exact aligned delayed dry");
-    requireValueAbsent(distinctOutput, 198.0f,
-                       "recovery wet value is absent from missed frame 4");
-    requireEventually([&] {
-        return overloadedBackend->completedCount.load(std::memory_order_acquire)
-            == preRecoveryCompletions + 1;
-    }, "unique recovery frame completes after output queue space is freed");
+    requireFrameValue(distinctOutput, 14.0f, "every sample of missed frame 4 is exact aligned delayed dry");
+    requireValueAbsent(distinctOutput, 198.0f, "recovery wet value is absent from missed frame 4");
+    requireEventually([&]
+                      { return overloadOutputsHandled.load(std::memory_order_acquire) == preRecoveryCompletions + 1; },
+                      "unique recovery frame completes after output queue space is freed");
 
     std::fill(distinctInput.begin(), distinctInput.end(), 100.0f);
     std::vector<float> frame5Output(2048);
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 1808);
     std::copy_n(distinctOutput.begin(), 1808, frame5Output.begin());
-    const auto beforeContinuation = overloadedBackend->completedCount.load(std::memory_order_acquire);
+    const auto beforeContinuation = overloadOutputsHandled.load(std::memory_order_acquire);
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 240);
     std::copy_n(distinctOutput.begin(), 240, frame5Output.begin() + 1808);
-    requireFrameValue(frame5Output, 15.0f,
-                      "every sample of missed frame 5 is exact aligned delayed dry");
-    requireValueAbsent(frame5Output, 198.0f,
-                       "recovery wet value is absent from missed frame 5");
+    requireFrameValue(frame5Output, 15.0f, "every sample of missed frame 5 is exact aligned delayed dry");
+    requireValueAbsent(frame5Output, 198.0f, "recovery wet value is absent from missed frame 5");
 
     std::vector<float> frame6Output(2048);
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 512);
     std::copy_n(distinctOutput.begin(), 512, frame6Output.begin());
-    requireEventually([&] {
-        return overloadedBackend->completedCount.load(std::memory_order_acquire)
-            == beforeContinuation + 1;
-    }, "following frame completes before frame 6 reaches its pre-fade deadline");
+    requireEventually([&] { return overloadOutputsHandled.load(std::memory_order_acquire) == beforeContinuation + 1; },
+                      "following frame completes before frame 6 reaches its pre-fade deadline");
     overloaded.processAudio(distinctInputs, 1, distinctOutputs, 1, 1536);
     std::copy_n(distinctOutput.begin(), 1536, frame6Output.begin() + 512);
     constexpr std::size_t fadeLength = 240;
     for (std::size_t sample = 0; sample < fadeLength; ++sample)
     {
-        const auto expected = 99.0f + 99.0f * static_cast<float>(sample)
-            / static_cast<float>(fadeLength);
+        const auto expected = 99.0f + 99.0f * static_cast<float>(sample) / static_cast<float>(fadeLength);
         require(std::abs(frame6Output[sample] - expected) < 0.0001f,
                 "recovery frame follows the exact 5 ms dry-to-wet ramp");
     }
     for (std::size_t sample = fadeLength; sample < frame6Output.size(); ++sample)
-        require(std::abs(frame6Output[sample] - 198.0f) < 0.0001f,
-                "recovery frame remains exact wet after the fade");
+        require(std::abs(frame6Output[sample] - 198.0f) < 0.0001f, "recovery frame remains exact wet after the fade");
     require(overloaded.runtimeTelemetry().deadlineMisses >= 6,
             "saturated and stale frames commit as deadline misses without replay");
     overloaded.release();
@@ -724,14 +729,16 @@ void testControlledWorkerDeadlineIntegration()
 
 void testWorkerQueuesAreClearedAcrossPrepareEpochs()
 {
-    const auto run = [](const bool incompatible) {
+    const auto run = [](const bool incompatible)
+    {
         auto backend = std::make_shared<ControlledBackend>();
         rave::RaveAudioEngine engine;
         engine.setModelBackend(backend);
         engine.prepare(48000.0, 2048, 1);
         engine.setDryWet(1.0f);
         std::vector<float> input(2048, 1.0f), output(2048);
-        const float* inputs[] { input.data() }; float* outputs[] { output.data() };
+        const float* inputs[] { input.data() };
+        float *outputs[]{output.data()};
         engine.processAudio(inputs, 1, outputs, 1, 2048);
         requireEventually([&] { return backend->entered.load(std::memory_order_acquire); },
                           "old epoch backend entered");
@@ -1620,8 +1627,28 @@ void testTwelveLatentsSurviveLifecycleAndReplacement()
 
 } // namespace
 
+void testGeneratorFallbackIsSilent()
+{
+    rave::RaveAudioEngine engine;
+    engine.prepare(48000.0, 256, 1);
+    engine.setGenerator(true, 0.5f, 0.1f);
+    engine.setDryWet(1.0f);
+    std::array<float, 256> input{}, output{};
+    input.fill(1.0f);
+    const float *inputs[]{input.data()};
+    float *outputs[]{output.data()};
+    for (int block = 0; block < 32; ++block)
+    {
+        engine.processAudio(inputs, 1, outputs, 1, 256);
+        for (float sample : output)
+            require(sample == 0.0f, "generator without a usable model must not leak the audio input");
+    }
+    engine.release();
+}
+
 int main()
 {
+    testGeneratorFallbackIsSilent();
     testDryFallbackWithoutModel();
     testProcessedAudioUsesMatchingDelayedDryBlock();
     testDeterministicResultValidationAndFade();

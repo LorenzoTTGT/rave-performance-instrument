@@ -1,0 +1,65 @@
+name: Native builds
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Check changed supported files
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            export FORMAT_BASE="$BASE"
+          else
+            export FORMAT_BASE="$(git rev-parse HEAD^)"
+          fi
+          npm run format:check
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            torch: "2.14.0"
+            options: ""
+          - os: windows-2022
+            torch: "2.14.0"
+            options: "--icon-assets-only"
+          - os: macos-15-intel
+            torch: "2.2.2"
+            options: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libfreetype6-dev librsvg2-bin
+      - if: runner.os == 'macOS'
+        run: brew install librsvg
+      - run: python -m pip install -r requirements-dev.txt "numpy==1.26.4"
+      - if: runner.os != 'macOS'
+        run: python -m pip install "torch==${{ matrix.torch }}" --index-url https://download.pytorch.org/whl/cpu
+      - if: runner.os == 'macOS'
+        run: python -m pip install "torch==${{ matrix.torch }}"
+      - run: python scripts/models.py fetch
+      - run: python scripts/build.py --test --stage build/staged ${{ matrix.options }}
+      - run: python scripts/artifacts.py install build/staged --install-root build/install-check
+      - name: Archive package preserving executable permissions
+        run: python -c "import tarfile; archive = tarfile.open('build/rave-${{ matrix.os }}.tar.gz', 'w:gz'); archive.add('build/staged', arcname='rave'); archive.close()"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: rave-${{ matrix.os }}
+          path: build/rave-${{ matrix.os }}.tar.gz
+          retention-days: 7

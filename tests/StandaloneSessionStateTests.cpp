@@ -29,6 +29,7 @@ void testRoundTripAndMidi()
                 "set every latent");
 
     state.setDryWet(0.75f);
+    state.setGenerator(true, 1.2f, 0.3f);
     state.setModelPath("model.ts");
     state.setMidiInputId("midi-1");
     state.setAudioSetup("CoreAudio", "out-1", "in-1");
@@ -62,6 +63,9 @@ void testRoundTripAndMidi()
                 && snapshot.audioInputId == "in-1",
             "round trip all identity and latents");
     require(restored.midiController(9) == 21, "mapping round trip");
+    require(snapshot.generate && std::abs(snapshot.motionDepth - 1.2f) < 0.001f &&
+                std::abs(snapshot.motionRate - 0.3f) < 0.001f,
+            "generator preset round trip");
 }
 
 void testLatestRequestGeneration()

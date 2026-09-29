@@ -2,6 +2,7 @@
 
 #include "model/ModelQualification.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <span>
@@ -62,6 +63,7 @@ void InferenceWorker::prepare(const double sampleRate,
 
     if (backend != nullptr)
         backend->prepare(sampleRate, maximumSamplesPerBlock);
+    preparedRate = sampleRate;
 }
 
 bool InferenceWorker::start(std::string* const startError)
@@ -243,6 +245,13 @@ std::uint64_t InferenceWorker::resetErrorCount() const noexcept
     return resetErrors.load(std::memory_order_relaxed);
 }
 
+void InferenceWorker::setGenerator(bool enabled, float depth, float rate) noexcept
+{
+    motionDepth.store(std::isfinite(depth) ? std::clamp(depth, 0.0f, 2.0f) : 0.0f, std::memory_order_relaxed);
+    motionRate.store(std::isfinite(rate) ? std::clamp(rate, 0.01f, 2.0f) : 0.1f, std::memory_order_relaxed);
+    generating.store(enabled, std::memory_order_relaxed);
+}
+
 void InferenceWorker::run()
 {
     auto observedWakeSequence = wakeSequence.load(std::memory_order_acquire);
@@ -265,14 +274,32 @@ void InferenceWorker::run()
         for (std::size_t index = 0; index < latentControlCount; ++index)
             latentControlSnapshot[index] = latentControlValues[index].load(std::memory_order_relaxed);
 
+        const bool synth = isGenerating();
+        if (synth)
+        {
+            const double seconds =
+                static_cast<double>(processingSequence) * static_cast<double>(sampleCount) / preparedRate;
+            for (std::size_t index = 0; index < latentControlCount; ++index)
+            {
+                const double phase = 6.283185307179586 * seconds * motionRate.load(std::memory_order_relaxed) *
+                                         (1.0 + 0.071 * static_cast<double>(index)) +
+                                     static_cast<double>(index);
+                latentControlSnapshot[index] =
+                    std::clamp(latentControlSnapshot[index] +
+                                   motionDepth.load(std::memory_order_relaxed) * static_cast<float>(std::sin(phase)),
+                               -4.0f, 4.0f);
+            }
+        }
         // A throwing backend must fail this block, never the worker thread.
         bool processed = false;
         try
         {
-            processed = backend->process(
-                std::span<const float>(inputBuffer.data(), sampleCount),
-                std::span<const float>(latentControlSnapshot.data(), latentControlSnapshot.size()),
-                std::span<float>(outputBuffer.data(), sampleCount));
+            processed =
+                synth ? backend->generate(latentControlSnapshot, std::span<float>(outputBuffer.data(), sampleCount))
+                      : backend->process(
+                            std::span<const float>(inputBuffer.data(), sampleCount),
+                            std::span<const float>(latentControlSnapshot.data(), latentControlSnapshot.size()),
+                            std::span<float>(outputBuffer.data(), sampleCount));
         }
         catch (...)
         {
@@ -302,9 +329,14 @@ void InferenceWorker::run()
             continue;
         }
 
+        if (synth)
+            for (std::size_t index = 0; index < sampleCount; ++index)
+                outputBuffer[index] = 0.25f * std::tanh(outputBuffer[index]);
         const float* outputChannels[] { outputBuffer.data() };
         if (!outputQueue.tryPush(outputChannels, 1, sampleCount, processingSequence))
             droppedOutputs.fetch_add(1, std::memory_order_relaxed);
+        if (outputHandledHookForTesting)
+            outputHandledHookForTesting();
     }
 
     running.store(false, std::memory_order_release);

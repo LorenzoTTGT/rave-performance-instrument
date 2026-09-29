@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "file": "freesoundloop10k_raspi_b2048_r44100_z16.ts",
+      "name": "Freesound Loops Lite",
+      "repository": "Tangible-Music-Lab/RAVE_models",
+      "revision": "3bf275ff6e223ddf9e82aacc5e9933f4af401fe8",
+      "url": "https://huggingface.co/Tangible-Music-Lab/RAVE_models/resolve/3bf275ff6e223ddf9e82aacc5e9933f4af401fe8/freesoundloop10k_raspi_b2048_r44100_z16.ts",
+      "sha256": "3ec093e132ce75d7fee3b8b734c739ebf8711a57ee332a60bce4359e2e34073e",
+      "size": 23628568,
+      "sample_rate": 44100,
+      "license": "MIT",
+      "cpu_note": "lightweight"
+    },
+    {
+      "file": "birds_pluma_b2048_r48000_z12.ts",
+      "name": "Birds - Pluma",
+      "repository": "Intelligent-Instruments-Lab/rave-models",
+      "revision": "c25a03d625840c40cd3a48779ed72f2a1947d7b4",
+      "url": "https://huggingface.co/Intelligent-Instruments-Lab/rave-models/resolve/c25a03d625840c40cd3a48779ed72f2a1947d7b4/birds_pluma_b2048_r48000_z12.ts",
+      "sha256": "a12ad61a2b0b5ee2329a72993bd94386a571600b37dd23feaa0a404940468d68",
+      "size": 42105901,
+      "sample_rate": 48000,
+      "license": "CC-BY-NC-4.0",
+      "cpu_note": "CPU intensive"
+    },
+    {
+      "file": "voice_vocalset_b2048_r48000_z16.ts",
+      "name": "Voice - VocalSet",
+      "repository": "Intelligent-Instruments-Lab/rave-models",
+      "revision": "c25a03d625840c40cd3a48779ed72f2a1947d7b4",
+      "url": "https://huggingface.co/Intelligent-Instruments-Lab/rave-models/resolve/c25a03d625840c40cd3a48779ed72f2a1947d7b4/voice_vocalset_b2048_r48000_z16.ts",
+      "sha256": "ba1b5392c4645c8040aa618e43b8269d840b9752536caac37c91c698334fa9a6",
+      "size": 163882118,
+      "sample_rate": 48000,
+      "license": "CC-BY-NC-4.0",
+      "cpu_note": "CPU intensive"
+    },
+    {
+      "file": "freesoundloop10k_default_b2048_r48000_z16.ts",
+      "name": "Freesound Loops",
+      "repository": "Tangible-Music-Lab/RAVE_models",
+      "revision": "3bf275ff6e223ddf9e82aacc5e9933f4af401fe8",
+      "url": "https://huggingface.co/Tangible-Music-Lab/RAVE_models/resolve/3bf275ff6e223ddf9e82aacc5e9933f4af401fe8/freesoundloop10k_default_b2048_r48000_z16.ts",
+      "sha256": "0875195056b2990d411a6b38e63c5ea591d2df9b9bd4ac2c25c06a65c9e16de1",
+      "size": 150175932,
+      "sample_rate": 48000,
+      "license": "MIT",
+      "cpu_note": "CPU intensive"
+    }
+  ]
+}

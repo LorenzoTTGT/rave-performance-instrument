@@ -5,7 +5,14 @@ import subprocess
 import sys
 
 repository = Path(__file__).resolve().parents[1]
-raise SystemExit(subprocess.call(
-    [sys.executable, str(repository / "assets/icon/generate_icon.py"), "--check"],
-    cwd=repository,
-))
+raise SystemExit(
+    subprocess.call(
+        [
+            sys.executable,
+            str(repository / "assets/icon/generate_icon.py"),
+            "--check",
+            *[arg for arg in sys.argv[1:] if arg],
+        ],
+        cwd=repository,
+    )
+)
